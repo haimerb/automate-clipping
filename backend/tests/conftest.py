@@ -12,6 +12,8 @@ _db_dir = tempfile.mkdtemp(prefix="edgetape-test-db-")
 os.environ["EDGETAPE_DATABASE_URL"] = f"sqlite:///{_db_dir}/test.db"
 os.environ["DATABASE_URL"] = os.environ["EDGETAPE_DATABASE_URL"]
 os.environ["EDGETAPE_JWT_SECRET"] = "edgetape-test-secret"
+# jobs en segundo plano sin Redis: corre la tarea en un hilo local
+os.environ.setdefault("EDGETAPE_ASYNC_BACKEND", "inproc")
 
 from app.main import create_app  # noqa: E402
 
