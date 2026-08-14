@@ -15,6 +15,17 @@ logger = logging.getLogger(__name__)
 
 STUDIO_UPLOAD_URL = "https://www.youtube.com/upload"
 
+# Enlace directo de subida por plataforma. Solo YouTube intenta subir por API
+# (con refresh token + credenciales OAuth); el resto usa el respaldo con enlace.
+PLATFORM_UPLOAD_URLS = {
+    "youtube_shorts": STUDIO_UPLOAD_URL,
+    "youtube": STUDIO_UPLOAD_URL,
+    "tiktok": "https://www.tiktok.com/upload",
+    "facebook_reels": "https://www.facebook.com/reels/create",
+    "instagram_reels": "https://www.instagram.com/reels/create",
+    "otros": None,
+}
+
 # platform de publicación -> platform de la cuenta vinculada asociada
 PLATFORM_ACCOUNT_MAP = {
     "youtube_shorts": "youtube",
@@ -92,7 +103,8 @@ async def publish_one(
     token = (linked.token if linked else None) or ""
     creds = yt.creds_for(linked)
 
-    if token and _is_refresh_token(token) and creds is not None:
+    is_youtube = platform in ("youtube_shorts", "youtube")
+    if is_youtube and token and _is_refresh_token(token) and creds is not None:
         try:
             video = await yt.upload_video(
                 str(path), clip.title, _job_description(clip), token, creds
@@ -114,7 +126,7 @@ async def publish_one(
         job.id, clip.id,
         platform=platform,
         status="listo",
-        url=STUDIO_UPLOAD_URL,
+        url=PLATFORM_UPLOAD_URLS.get(platform),
         method="manual",
         account=linked.name if linked else None,
     )
