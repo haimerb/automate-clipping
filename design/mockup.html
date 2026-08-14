@@ -1,0 +1,486 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>edgetape — every good moment, already cut</title>
+<meta name="description" content="Edgetape scans your long recordings, flags the strongest moments, and lays them out as a review reel — each one ready to trim and export.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fragment+Mono&family=Hanken+Grotesk:ital,wght@0,300..800;1,300..800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --surface: #F1F3F5;
+    --surface-2: #E9EDF1;
+    --card: #FFFFFF;
+    --ink: #14161A;
+    --muted: #69707C;
+    --rail: #D6DBE2;
+    --edge: #1E3A8A;
+    --mark: #FFC647;
+    --mono: "Fragment Mono", ui-monospace, monospace;
+    --sans: "Hanken Grotesk", system-ui, sans-serif;
+    --maxw: 1180px;
+    --shadow: 0 1px 0 rgba(20,22,26,.06), 0 12px 28px -18px rgba(20,22,26,.35);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    background: var(--surface);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 1rem;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::selection { background: var(--mark); color: var(--ink); }
+
+  a { color: var(--edge); }
+  a:focus-visible, button:focus-visible {
+    outline: 2px solid var(--edge);
+    outline-offset: 3px;
+    border-radius: 2px;
+  }
+
+  .wrap { max-width: var(--maxw); margin-inline: auto; padding-inline: 24px; }
+
+  /* ── header ─────────────────────────────────────── */
+  .topbar {
+    border-bottom: 1px solid var(--rail);
+    background: color-mix(in srgb, var(--surface) 88%, transparent);
+    backdrop-filter: blur(6px);
+    position: sticky; top: 0; z-index: 20;
+  }
+  .topbar__row { display: flex; align-items: baseline; justify-content: space-between; padding-block: 14px; }
+  .brand { font-family: var(--mono); font-size: 1.05rem; letter-spacing: .02em; text-decoration: none; color: var(--ink); }
+  .brand b { font-weight: 400; color: var(--edge); }
+  .topbar__meta { font-family: var(--mono); font-size: .72rem; color: var(--muted); letter-spacing: .08em; }
+  .topbar__meta span + span::before { content: " / "; color: var(--rail); }
+
+  /* ── hero ───────────────────────────────────────── */
+  .hero { padding-block: clamp(56px, 9vw, 110px) 0; }
+  .hero__label {
+    font-family: var(--mono); font-size: .72rem; letter-spacing: .18em;
+    color: var(--edge); text-transform: uppercase;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .hero__label::before { content: ""; width: 34px; height: 1px; background: var(--edge); }
+  .hero h1 {
+    font-family: var(--sans); font-weight: 600; letter-spacing: -.02em;
+    font-size: clamp(2.6rem, 6.4vw, 4.6rem);
+    line-height: 1.02;
+    margin-top: 22px; max-width: 16ch;
+  }
+  .hero h1 em { font-style: normal; background: linear-gradient(transparent 66%, var(--mark) 66%); padding-inline: .06em; }
+  .hero__sub { margin-top: 26px; max-width: 52ch; font-size: 1.12rem; color: var(--muted); }
+  .hero__sub b { color: var(--ink); font-weight: 600; }
+
+  .cta { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 34px; }
+  .btn {
+    font-family: var(--mono); font-size: .82rem; letter-spacing: .04em;
+    padding: 13px 22px; border-radius: 3px; text-decoration: none;
+    transition: background .15s, color .15s, box-shadow .15s;
+  }
+  .btn--primary { background: var(--ink); color: #fff; }
+  .btn--primary:hover { background: var(--edge); }
+  .btn--ghost { border: 1px solid var(--rail); color: var(--ink); background: transparent; }
+  .btn--ghost:hover { border-color: var(--ink); background: var(--card); }
+
+  /* running reel-time rail under hero */
+  .rail { margin-top: clamp(44px, 7vw, 76px); border-top: 1px solid var(--rail); }
+  .rail__bar { position: relative; height: 56px; }
+  .rail__line { position: absolute; top: 27px; left: 0; right: 0; height: 1px; background: var(--rail); }
+  .rail__ticks {
+    position: absolute; top: 0; left: 0; right: 0; height: 56px;
+    background: repeating-linear-gradient(to right, var(--rail) 0 1px, transparent 1px calc(var(--tickw, 9.7%)));
+  }
+  .rail__labels { position: absolute; top: 34px; left: 0; right: 0; display: flex; justify-content: space-between; }
+  .rail__labels span { font-family: var(--mono); font-size: .66rem; color: var(--muted); letter-spacing: .06em; }
+  .rail__playhead {
+    position: absolute; top: 12px; left: 0; width: 2px; height: 30px;
+    background: var(--edge);
+    animation: sweep 4.2s cubic-bezier(.65,0,.35,1) forwards;
+  }
+  .rail__playhead::after {
+    content: ""; position: absolute; top: -7px; left: -4px;
+    border: 5px solid transparent; border-bottom-color: var(--edge); border-top: 0;
+  }
+  @keyframes sweep { from { left: 0; } to { left: 100%; } }
+
+  /* ── reel section (the signature) ───────────────── */
+  .reel { margin-top: 64px; }
+  .sec__head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 26px; }
+  .sec__label { font-family: var(--mono); font-size: .72rem; letter-spacing: .18em; text-transform: uppercase; color: var(--edge); }
+  .sec__note { font-family: var(--mono); font-size: .72rem; color: var(--muted); letter-spacing: .04em; }
+  .sec__title { font-size: clamp(1.7rem, 3.4vw, 2.3rem); font-weight: 600; letter-spacing: -.015em; margin-top: 6px; }
+
+  /* sprocket strip */
+  .sprockets {
+    height: 14px;
+    background: repeating-linear-gradient(to right, var(--ink) 0 12px, transparent 12px 26px);
+    opacity: .9;
+  }
+
+  .board {
+    background: var(--surface-2);
+    border: 1px solid var(--rail);
+    border-top: 0;
+    padding: clamp(20px, 3.4vw, 44px);
+  }
+
+  .frames {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 26px;
+  }
+
+  .frame {
+    background: var(--card);
+    border: 1px solid var(--rail);
+    border-radius: 3px;
+    padding: 18px 18px 16px;
+    text-align: left;
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+    box-shadow: var(--shadow);
+    display: flex; flex-direction: column; gap: 12px;
+    transition: transform .22s ease, border-color .22s ease, box-shadow .22s ease;
+  }
+  /* hand-laid stagger: each frame sits slightly off-line on the light table */
+  .frame:nth-child(3n+2) { transform: rotate(-.35deg) translateY(3px); }
+  .frame:nth-child(3n+3) { transform: rotate(.4deg) translateY(1px); }
+  .frame:hover { transform: rotate(0) translateY(-4px); border-color: var(--edge); box-shadow: 0 1px 0 rgba(20,22,26,.06), 0 22px 44px -22px rgba(20,22,26,.45); z-index: 2; }
+  .frame:active { transform: translateY(-1px); }
+
+  .frame.is-active { border-color: var(--edge); border-width: 2px; padding: 17px 17px 15px; box-shadow: 0 0 0 1px var(--edge), var(--shadow); }
+
+  .frame__top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .frame__tag { font-family: var(--mono); font-size: .66rem; letter-spacing: .14em; color: var(--ink); }
+  .frame.is-active .frame__tag { background: var(--mark); padding: 2px 6px; border-radius: 2px; }
+  .frame__time { font-family: var(--mono); font-size: .62rem; color: var(--muted); letter-spacing: .04em; white-space: nowrap; }
+
+  .frame__wave { display: block; width: 100%; height: 44px; }
+  .frame__wave rect { fill: #1E3A8A; opacity: .55; }
+  .frame.is-active .frame__wave rect { fill: var(--edge); opacity: .9; }
+
+  .frame__meta { display: flex; align-items: baseline; gap: 10px; }
+  .frame__dur { font-family: var(--mono); font-size: .66rem; color: var(--edge); white-space: nowrap; }
+  .frame__title { font-weight: 600; font-size: .98rem; letter-spacing: -.01em; line-height: 1.3; }
+  .frame__line {
+    font-size: .82rem; color: var(--muted); line-height: 1.5;
+    border-top: 1px dashed var(--rail); padding-top: 10px;
+  }
+  .frame__line q { quotes: "\201C" "\201D"; }
+
+  /* selected-clip detail */
+  .detail { margin-top: 26px; border-top: 1px solid var(--rail); padding-top: 22px; display: grid; grid-template-columns: auto 1fr auto; gap: 22px; align-items: start; }
+  .detail__readout { font-family: var(--mono); font-size: .7rem; color: var(--muted); line-height: 2; white-space: nowrap; }
+  .detail__readout b { display: block; font-size: 1.05rem; color: var(--edge); letter-spacing: .02em; }
+  .detail__text { max-width: 62ch; }
+  .detail__text h3 { font-size: 1.15rem; font-weight: 600; letter-spacing: -.01em; margin-bottom: 6px; }
+  .detail__text p { color: var(--muted); font-size: .95rem; line-height: 1.65; }
+  .detail__text p mark {
+    background: var(--mark); color: var(--ink);
+    padding: .05em .2em; border-radius: 2px;
+    -webkit-box-decoration-break: clone; box-decoration-break: clone;
+  }
+  .detail__act { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+  .detail__act .hint { font-family: var(--mono); font-size: .62rem; color: var(--muted); letter-spacing: .06em; }
+
+  /* ── how it works ───────────────────────────────── */
+  .steps { margin-top: clamp(72px, 9vw, 120px); border-top: 1px solid var(--rail); padding-top: clamp(44px, 6vw, 72px); }
+  .steps__grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 26px; margin-top: 34px; }
+  .step { border-top: 1px solid var(--ink); padding-top: 14px; }
+  .step__num { font-family: var(--mono); font-size: .72rem; letter-spacing: .16em; color: var(--edge); }
+  .step h3 { font-size: 1.25rem; font-weight: 600; margin: 12px 0 8px; letter-spacing: -.01em; }
+  .step p { color: var(--muted); font-size: .95rem; max-width: 34ch; }
+
+  /* ── closing band + footer ──────────────────────── */
+  .closer {
+    margin-top: clamp(72px, 9vw, 120px);
+    background: var(--ink); color: #fff;
+  }
+  .closer__inner { padding-block: clamp(56px, 7vw, 90px); }
+  .closer__inner h2 { font-size: clamp(1.8rem, 3.6vw, 2.6rem); font-weight: 600; letter-spacing: -.015em; max-width: 20ch; }
+  .closer__inner h2 em { font-style: normal; background: linear-gradient(transparent 66%, var(--mark) 66%); padding-inline: .06em; }
+  .closer__inner p { color: #B7BDC6; margin-top: 16px; max-width: 48ch; }
+  .closer__inner .cta { margin-top: 30px; }
+  .closer__inner .btn--primary { background: #fff; color: var(--ink); }
+  .closer__inner .btn--primary:hover { background: var(--mark); }
+  .closer__inner .btn--ghost { border-color: #3A3E45; color: #fff; }
+  .closer__inner .btn--ghost:hover { border-color: #fff; }
+
+  .foot {
+    border-top: 1px solid rgba(255,255,255,.14);
+    padding-block: 22px;
+    display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: space-between;
+    font-family: var(--mono); font-size: .62rem; letter-spacing: .1em;
+    color: #8B919C;
+  }
+  .foot b { font-weight: 400; color: #fff; }
+
+  /* ── responsive ─────────────────────────────────── */
+  @media (max-width: 960px) {
+    .frames { grid-template-columns: repeat(2, 1fr); }
+    .steps__grid { grid-template-columns: 1fr; }
+    .detail { grid-template-columns: 1fr; }
+    .detail__act { flex-direction: row; align-items: center; }
+  }
+  @media (max-width: 600px) {
+    .frames { grid-template-columns: 1fr; }
+    .frame:nth-child(3n+2), .frame:nth-child(3n+3) { transform: none; }
+    .topbar__meta { display: none; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .rail__playhead { animation: none; opacity: 0; }
+    .frame { transition: none; }
+  }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap topbar__row">
+    <a class="brand" href="#">edgetape<b>.</b></a>
+    <div class="topbar__meta"><span>REEL 0426</span><span>84 MIN SOURCE</span><span>AUTO-CLIP</span></div>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <p class="hero__label">edgetape — automatic clipping</p>
+    <h1>One recording. A reel of the <em>moments</em> that matter.</h1>
+    <p class="hero__sub">Edgetape scans your audio or video, <b>flags the strongest passages</b>, and lays them out as a review reel — each one ready to trim, caption, and export as a clip.</p>
+    <div class="cta">
+      <a class="btn btn--primary" href="#reel">Start reviewing</a>
+      <a class="btn btn--ghost" href="#steps">How it works</a>
+    </div>
+  </div>
+
+  <div class="wrap">
+    <div class="rail" id="rail">
+      <div class="rail__bar" aria-hidden="true">
+        <div class="rail__playhead"></div>
+        <div class="rail__line"></div>
+        <div class="rail__ticks"></div>
+        <div class="rail__labels">
+          <span>00:00</span><span>00:10</span><span>00:20</span><span>00:30</span><span>00:40</span><span>00:50</span><span>01:00</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="reel" id="reel">
+  <div class="wrap">
+    <div class="sec__head">
+      <div>
+        <p class="sec__label">Section 01 — the reel</p>
+        <h2 class="sec__title">Your clips, laid out</h2>
+      </div>
+      <p class="sec__note">Auto-detected from <b>Clean_Recording_0426.wav</b> · 10 clips</p>
+    </div>
+  </div>
+
+  <div class="sprockets" aria-hidden="true"></div>
+  <div class="board">
+    <div class="wrap">
+      <div class="frames" id="frames"></div>
+      <div class="detail" id="detail"></div>
+    </div>
+  </div>
+</section>
+
+<section class="steps" id="steps">
+  <div class="wrap">
+    <p class="sec__label">Section 02 — the pipeline</p>
+    <h2 class="sec__title">From drop to cut</h2>
+    <div class="steps__grid">
+      <article class="step">
+        <p class="step__num">01 / INGEST</p>
+        <h3>Drop a recording</h3>
+        <p>MP4, MOV, WAV, MP3 — anything you'd record. Local files stay local.</p>
+      </article>
+      <article class="step">
+        <p class="step__num">02 / SCAN</p>
+        <h3>We find the strong moments</h3>
+        <p>Speech transcription plus audio analysis mark the passages worth a second look.</p>
+      </article>
+      <article class="step">
+        <p class="step__num">03 / CUT</p>
+        <h3>Review, trim, export</h3>
+        <p>Open a clip, nudge the in and out points, and export the cut. The rest of the recording stays untouched.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section class="closer">
+  <div class="wrap closer__inner">
+    <h2>Never re-listen to a two-hour recording <em>again</em>.</h2>
+    <p>Edgetape does the scanning, you make the call. Get the good parts to your feed in minutes.</p>
+    <div class="cta">
+      <a class="btn btn--primary" href="#reel">Start reviewing</a>
+    </div>
+    <footer class="foot">
+      <span><b>EDGETAPE</b> · MOTION PICTURE FILM</span>
+      <span>RUR IT 1C 014 · 40MM CAMERA STOCK</span>
+      <span>REC 04/26 · PROCESS ECN-2</span>
+    </footer>
+  </div>
+</section>
+
+<script>
+(function () {
+  var CLIPS = [
+    {
+      i: 1, in: "00:00:12:00", out: "00:01:48:24", dur: "1:36",
+      title: "Cold open — why we started",
+      line: "We started the show because nobody was telling the real story of how ads actually get made.",
+      script: "And honestly, we started the show because nobody was telling the real story of how ads actually get made. Every case study you read skips the part where the client deleted the campaign and we rebuilt it in a weekend.",
+      seed: 3
+    },
+    {
+      i: 2, in: "00:04:51:10", out: "00:07:24:05", dur: "2:33",
+      title: "The first account that worked",
+      line: "The first account that really worked taught us it wasn't the creative. It was the honesty.",
+      script: "The first account that really worked taught us it wasn't the creative. It was the honesty. We told them the truth about their product and suddenly everything we made performed.",
+      seed: 8
+    },
+    {
+      i: 3, in: "00:09:17:02", out: "00:10:05:19", dur: "0:48",
+      title: "Funny aside before the break",
+      line: "He asked if the logo could be bigger. There was no logo. There was no logo anywhere in the ad.",
+      script: "He asked if the logo could be bigger. There was no logo. There was no logo anywhere in the ad. We didn't put one in. He never noticed.",
+      seed: 13
+    },
+    {
+      i: 4, in: "00:14:32:16", out: "00:17:50:01", dur: "3:17",
+      title: "The 3× rule explained",
+      line: "If a point needs three screenshots to explain, it's not a point — it's a lecture.",
+      script: "If a point needs three screenshots to explain, it's not a point — it's a lecture. And lectures don't travel. The 3× rule keeps every idea down to one clean frame.",
+      seed: 21
+    },
+    {
+      i: 5, in: "00:21:08:09", out: "00:23:40:12", dur: "2:32",
+      title: "When budgets don't matter",
+      line: "The twenty-million-dollar launch and the hundred-dollar launch failed for the same reason.",
+      script: "The twenty-million-dollar launch and the hundred-dollar launch failed for the same reason — nobody knew what they were looking at in the first three seconds.",
+      seed: 34
+    },
+    {
+      i: 6, in: "00:29:55:03", out: "00:33:12:20", dur: "3:17",
+      title: "Client story: the launch fail",
+      line: "We cut the video live on stage and watched the whole room reach for their phones.",
+      script: "We cut the video live on stage and watched the whole room reach for their phones. That was the moment we stopped selling deliverables and started selling attention.",
+      seed: 42
+    },
+    {
+      i: 7, in: "00:38:04:27", out: "00:40:21:08", dur: "2:16",
+      title: "Tools we actually use",
+      line: "The stack is three tools and a shared folder. Complexity is a bill you pay in velocity.",
+      script: "The stack is three tools and a shared folder. Complexity is a bill you pay in velocity, and we refuse to overpay.",
+      seed: 55
+    },
+    {
+      i: 8, in: "00:45:47:14", out: "00:48:33:02", dur: "2:45",
+      title: "On saying no to a campaign",
+      line: "Saying no to the client's favorite idea was the most profitable thing we did that year.",
+      script: "Saying no to the client's favorite idea was the most profitable thing we did that year. We told them their favorite campaign was a distraction, then gave them something better.",
+      seed: 60
+    },
+    {
+      i: 9, in: "00:52:19:06", out: "00:55:02:11", dur: "2:43",
+      title: "The paid-with-pride takeaway",
+      line: "Run ads you'd be proud to show at a dinner party. If you'd hide it, the algorithm hides it too.",
+      script: "Run ads you'd be proud to show at a dinner party. If you'd hide it, the algorithm hides it too. That single sentence changed every brief we write.",
+      seed: 71
+    },
+    {
+      i: 10, in: "00:58:44:22", out: "01:01:10:17", dur: "2:25",
+      title: "Closing advice for new teams",
+      line: "Start with the audience's morning, not your brand book. Everything else follows.",
+      script: "Start with the audience's morning, not your brand book. Everything else follows — format, tone, budget. The brand book is what you check last, not first.",
+      seed: 86
+    }
+  ];
+
+  function wave(seed, bars) {
+    var heights = [];
+    var n = seed % 7 + 1;
+    for (var i = 0; i < bars; i++) {
+      var h = Math.abs(Math.sin(i * 0.9 + seed) * Math.cos(i * 0.13 + n));
+      var peak = Math.abs(Math.sin(i * 0.31 + seed * 0.5));
+      heights.push(Math.max(0.12, Math.min(1, h * 0.7 + peak * 0.6)));
+    }
+    return heights;
+  }
+
+  function svgFor(seed) {
+    var h = wave(seed, 36).map(function (v) { return v.toFixed(3); }).join(",");
+    return '<svg class="frame__wave" viewBox="0 0 36 44" preserveAspectRatio="none" aria-hidden="true">' +
+      '<rect x="0" y="0" width="0" height="0" fill="none"></rect>' +
+      h.split(",").map(function (v, i) {
+        var barH = Math.round(parseFloat(v) * 40);
+        return '<rect x="' + i + '" y="' + (42 - barH) + '" width="0.62" height="' + barH + '"></rect>';
+      }).join("") + '</svg>';
+  }
+
+  var framesEl = document.getElementById("frames");
+  var detailEl = document.getElementById("detail");
+
+  function renderFrames() {
+    framesEl.innerHTML = CLIPS.map(function (c) {
+      return '<button class="frame" data-i="' + c.i + '" aria-pressed="false">' +
+        '<span class="frame__top"><span class="frame__tag">CLIP ' + pad2(c.i) + '</span><span class="frame__time">' + c.in + ' → ' + c.out + '</span></span>' +
+        svgFor(c.seed) +
+        '<span class="frame__meta"><span class="frame__dur">' + c.dur + '</span><span class="frame__title">' + c.title + '</span></span>' +
+        '<span class="frame__line"><q>' + c.line + '</q></span>' +
+      '</button>';
+    }).join("");
+  }
+
+  function pad2(n) { return n < 10 ? "0" + n : "" + n; }
+
+  function markScript(script, line) {
+    var idx = script.toLowerCase().indexOf(line.toLowerCase());
+    if (idx === -1) return script;
+    return script.slice(0, idx) + '<mark>' + script.slice(idx, idx + line.length) + '</mark>' + script.slice(idx + line.length);
+  }
+
+  function renderDetail(c) {
+    detailEl.innerHTML =
+      '<div class="detail__readout">IN<b>' + c.in + '</b>OUT<b>' + c.out + '</b>LEN<b>' + c.dur + '</b></div>' +
+      '<div class="detail__text"><h3>' + c.title + '</h3><p>' + markScript(c.script, c.line) + '</p></div>' +
+      '<div class="detail__act"><a class="btn btn--primary" href="#reel">Trim &amp; export</a><span class="hint">NUDGE IN / OUT ON THE TIMELINE</span></div>';
+  }
+
+  framesEl.addEventListener("click", function (e) {
+    var btn = e.target.closest("button.frame");
+    if (!btn) return;
+    var active = document.querySelector(".frame.is-active");
+    if (active) { active.classList.remove("is-active"); active.setAttribute("aria-pressed", "false"); }
+    if (active === btn) { detailEl.innerHTML = ""; return; }
+    btn.classList.add("is-active");
+    btn.setAttribute("aria-pressed", "true");
+    var c = CLIPS.filter(function (x) { return x.i === parseInt(btn.dataset.i, 10); })[0];
+    renderDetail(c);
+    detailEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  });
+
+  renderFrames();
+  renderDetail(CLIPS[0]);
+  var first = framesEl.querySelector(".frame");
+  first.classList.add("is-active");
+  first.setAttribute("aria-pressed", "true");
+})();
+</script>
+</body>
+</html>

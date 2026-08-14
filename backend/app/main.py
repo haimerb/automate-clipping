@@ -1,0 +1,492 @@
+from __future__ import annotations
+
+import asyncio
+import os
+import uuid
+from pathlib import Path
+
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from .auth import create_token, get_current_user, hash_password, verify_password
+from .db import get_db, init_db
+from . import publish as pubmod
+from . import youtube_publish as ytpub
+from .llm_scorer import build_clip_selector
+from .media import extract_thumbnail
+from .models import (
+    Clip,
+    ClipPublish,
+    DashboardStats,
+    Job,
+    JobSettings,
+    LinkedAccountCreate,
+    LinkedAccountOut,
+    LoginRequest,
+    PlatformPost,
+    PlatformTotals,
+    PostCreate,
+    PublishAllRequest,
+    RecentPost,
+    RegisterRequest,
+    TokenResponse,
+    UserOut,
+)
+from .processing import export_clip, run_job
+from .storage import JobStore
+from .transcriber import build_transcriber
+from .users import LinkedAccount, User
+from .youtube import is_youtube_url
+
+BACKEND_DIR = Path(__file__).resolve().parent.parent
+DEFAULT_STORAGE = BACKEND_DIR / "storage"
+
+
+class YoutubeRequest(BaseModel):
+    url: str
+
+
+def _build_dashboard(store: JobStore, owner_id: str) -> DashboardStats:
+    stats = DashboardStats()
+    recent: list[RecentPost] = []
+    for job in store.list_jobs(owner_id):
+        stats.jobs += 1
+        clips = store.get_clips(job.id)
+        stats.clips += len(clips)
+        titles = {c.id: c.title for c in clips}
+        for post in store.get_posts(job.id):
+            stats.posts += 1
+            if post.status == "publicado":
+                stats.publicados += 1
+            stats.total_views += post.views
+            stats.total_likes += post.likes
+            stats.total_earnings += post.earnings
+            tot = stats.by_platform.setdefault(post.platform, PlatformTotals())
+            tot.posts += 1
+            tot.views += post.views
+            tot.likes += post.likes
+            tot.earnings += post.earnings
+            recent.append(
+                RecentPost(
+                    post_id=post.id,
+                    job_id=job.id,
+                    clip_id=post.clip_id,
+                    title=titles.get(post.clip_id, job.filename),
+                    platform=post.platform,
+                    status=post.status,
+                    url=post.url,
+                    views=post.views,
+                    likes=post.likes,
+                    earnings=post.earnings,
+                    currency=post.currency,
+                )
+            )
+    stats.recent_posts = sorted(recent, key=lambda r: r.post_id, reverse=True)[:20]
+    return stats
+
+
+def _account_out(account: LinkedAccount) -> LinkedAccountOut:
+    """Serializa una cuenta vinculada sin exponer el client_secret."""
+    return LinkedAccountOut(
+        id=account.id,
+        platform=account.platform,
+        name=account.name,
+        handle=account.handle,
+        token=account.token,
+        client_id=account.client_id,
+        has_client_secret=bool(account.client_secret),
+        redirect_uri=account.redirect_uri,
+        created_at=account.created_at,
+    )
+
+
+def create_app(storage_root: str | Path | None = None, transcriber=None, selector=None) -> FastAPI:
+    store = JobStore(storage_root or os.environ.get("EDGETAPE_STORAGE") or DEFAULT_STORAGE)
+    tsc = transcriber or build_transcriber()
+    sel = selector or build_clip_selector()
+    init_db()
+
+    app = FastAPI(title="edgetape", version="0.1.0")
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    def owned_job(job_id: str, user_id: str) -> Job:
+        job = store.get_job(job_id)
+        if job is None or job.owner_id != user_id:
+            raise HTTPException(status_code=404, detail="job not found")
+        return job
+
+    def owned_clip(job: Job, clip_id: str) -> Clip:
+        clip = next((c for c in store.get_clips(job.id) if c.id == clip_id), None)
+        if clip is None:
+            raise HTTPException(status_code=404, detail="clip not found")
+        return clip
+
+    @app.get("/api/health")
+    def health() -> dict:
+        try:
+            import yt_dlp  # noqa: F401
+
+            yt = True
+        except ImportError:
+            yt = False
+        return {
+            "ok": True,
+            "version": app.version,
+            "transcriber": tsc.name,
+            "scorer": sel.name,
+            "youtube": yt,
+        }
+
+    # ── auth ──────────────────────────────────────────
+
+    @app.post("/api/auth/register", response_model=TokenResponse, status_code=201)
+    def register(body: RegisterRequest, db: Session = Depends(get_db)) -> TokenResponse:
+        email = body.email.strip().lower()
+        if not email or "@" not in email:
+            raise HTTPException(status_code=422, detail="Email inválido")
+        if len(body.password) < 6:
+            raise HTTPException(status_code=422, detail="La contraseña debe tener al menos 6 caracteres")
+        if db.scalar(select(User).where(User.email == email)) is not None:
+            raise HTTPException(status_code=409, detail="Ese email ya está registrado")
+        user = User(
+            id=uuid.uuid4().hex,
+            email=email,
+            name=body.name.strip() or email.split("@")[0],
+            password_hash=hash_password(body.password),
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        return TokenResponse(access_token=create_token(user), user=UserOut(**user.__dict__))
+
+    @app.post("/api/auth/login", response_model=TokenResponse)
+    def login(body: LoginRequest, db: Session = Depends(get_db)) -> TokenResponse:
+        email = body.email.strip().lower()
+        user = db.scalar(select(User).where(User.email == email))
+        if user is None or not verify_password(body.password, user.password_hash):
+            raise HTTPException(status_code=401, detail="Email o contraseña incorrectos")
+        return TokenResponse(access_token=create_token(user), user=UserOut(**user.__dict__))
+
+    @app.get("/api/auth/me", response_model=UserOut)
+    def me(user: User = Depends(get_current_user)) -> UserOut:
+        return UserOut(**user.__dict__)
+
+    # ── cuentas vinculadas ────────────────────────────
+
+    @app.get("/api/accounts", response_model=list[LinkedAccountOut])
+    def list_accounts(
+        user: User = Depends(get_current_user), db: Session = Depends(get_db)
+    ) -> list[LinkedAccountOut]:
+        accounts = db.scalars(
+            select(LinkedAccount)
+            .where(LinkedAccount.user_id == user.id)
+            .order_by(LinkedAccount.created_at)
+        )
+        return [_account_out(a) for a in accounts]
+
+    @app.post("/api/accounts", response_model=LinkedAccountOut, status_code=201)
+    def create_account(
+        body: LinkedAccountCreate,
+        user: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ) -> LinkedAccountOut:
+        account = LinkedAccount(
+            id=uuid.uuid4().hex,
+            user_id=user.id,
+            platform=body.platform,
+            name=body.name.strip(),
+            handle=body.handle.strip(),
+            token=(body.token or "").strip() or None,
+            client_id=(body.client_id or "").strip() or None,
+            client_secret=(body.client_secret or "").strip() or None,
+            redirect_uri=(body.redirect_uri or "").strip() or None,
+        )
+        db.add(account)
+        db.commit()
+        db.refresh(account)
+        return _account_out(account)
+
+    @app.patch("/api/accounts/{account_id}", response_model=LinkedAccountOut)
+    def update_account(
+        account_id: str,
+        body: LinkedAccountCreate,
+        user: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ) -> LinkedAccountOut:
+        account = db.scalar(
+            select(LinkedAccount).where(
+                LinkedAccount.id == account_id, LinkedAccount.user_id == user.id
+            )
+        )
+        if account is None:
+            raise HTTPException(status_code=404, detail="cuenta no encontrada")
+        account.platform = body.platform
+        account.name = body.name.strip()
+        account.handle = body.handle.strip()
+        account.token = (body.token or "").strip() or None
+        account.client_id = (body.client_id or "").strip() or None
+        if body.client_secret:  # vacío = conservar el guardado
+            account.client_secret = body.client_secret.strip()
+        account.redirect_uri = (body.redirect_uri or "").strip() or None
+        db.commit()
+        db.refresh(account)
+        return _account_out(account)
+
+    @app.delete("/api/accounts/{account_id}", status_code=204)
+    def delete_account(
+        account_id: str,
+        user: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ) -> None:
+        account = db.scalar(
+            select(LinkedAccount).where(
+                LinkedAccount.id == account_id, LinkedAccount.user_id == user.id
+            )
+        )
+        if account is None:
+            raise HTTPException(status_code=404, detail="cuenta no encontrada")
+        db.delete(account)
+        db.commit()
+
+    # ── publicación real en YouTube ──────────────────
+
+    @app.get("/api/accounts/{account_id}/youtube/auth")
+    def youtube_auth_url(
+        account_id: str,
+        request: Request,
+        user: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ) -> dict:
+        account = db.scalar(
+            select(LinkedAccount).where(
+                LinkedAccount.id == account_id, LinkedAccount.user_id == user.id
+            )
+        )
+        if account is None:
+            raise HTTPException(status_code=404, detail="cuenta no encontrada")
+        if account.platform != "youtube":
+            raise HTTPException(status_code=400, detail="La cuenta no es de YouTube")
+        derived_uri = f"{str(request.base_url).rstrip('/')}/api/youtube/callback"
+        creds = ytpub.creds_for(account, redirect_uri=derived_uri)
+        if creds is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Faltan las credenciales de YouTube (client_id y client_secret). "
+                    "Regístralas en el formulario de la cuenta (Google Cloud → Credenciales "
+                    "de OAuth) o define EDGETAPE_YT_CLIENT_ID y EDGETAPE_YT_CLIENT_SECRET. "
+                    "Sin ellas igual puedes usar el respaldo con enlace a Studio."
+                ),
+            )
+        return {"auth_url": ytpub.auth_url(account.id, creds), "redirect_uri": creds.redirect_uri}
+
+    @app.get("/api/youtube/callback")
+    def youtube_callback(
+        code: str,
+        state: str,
+        request: Request,
+        db: Session = Depends(get_db),
+    ) -> RedirectResponse:
+        account = db.get(LinkedAccount, state)
+        if account is None:
+            return RedirectResponse("/?youtube=error", status_code=302)
+        derived_uri = f"{str(request.base_url).rstrip('/')}/api/youtube/callback"
+        creds = ytpub.creds_for(account, redirect_uri=derived_uri)
+        if creds is None:
+            return RedirectResponse("/?youtube=error", status_code=302)
+        try:
+            refresh_token = ytpub.exchange_code(code, creds)
+        except Exception:  # noqa: BLE001
+            return RedirectResponse("/?youtube=error", status_code=302)
+        account.token = refresh_token
+        db.commit()
+        return RedirectResponse("/?youtube=connected", status_code=302)
+
+    # ── jobs ──────────────────────────────────────────
+
+    @app.post("/api/jobs", status_code=202)
+    async def create_job(
+        file: UploadFile = File(...), user: User = Depends(get_current_user)
+    ) -> Job:
+        job = store.create_job(file.filename or "upload", owner_id=user.id)
+        dest = store.upload_path(job.id)
+        with dest.open("wb") as fh:
+            while chunk := await file.read(1024 * 1024):
+                fh.write(chunk)
+        asyncio.create_task(run_job(job.id, store, tsc, sel))
+        return store.get_job(job.id)  # type: ignore[return-value]
+
+    @app.post("/api/jobs/youtube", status_code=202, response_model=Job)
+    async def create_youtube_job(
+        body: YoutubeRequest, user: User = Depends(get_current_user)
+    ) -> Job:
+        if not is_youtube_url(body.url.strip()):
+            raise HTTPException(status_code=400, detail="La URL no parece ser de YouTube")
+        job = store.create_job(
+            "video de YouTube", source="youtube", source_url=body.url.strip(), owner_id=user.id
+        )
+        asyncio.create_task(run_job(job.id, store, tsc, sel))
+        return store.get_job(job.id)  # type: ignore[return-value]
+
+    @app.get("/api/jobs", response_model=list[Job])
+    def list_jobs(user: User = Depends(get_current_user)) -> list[Job]:
+        jobs = store.list_jobs(user.id)
+        return sorted(jobs, key=lambda j: (j.created_at, j.filename), reverse=True)
+
+    @app.get("/api/jobs/{job_id}", response_model=Job)
+    def get_job(job_id: str, user: User = Depends(get_current_user)) -> Job:
+        return owned_job(job_id, user.id)
+
+    @app.get("/api/jobs/{job_id}/clips", response_model=list[Clip])
+    def list_clips(job_id: str, user: User = Depends(get_current_user)) -> list[Clip]:
+        job = owned_job(job_id, user.id)
+        return store.get_clips(job.id)
+
+    @app.patch("/api/jobs/{job_id}", response_model=Job)
+    def patch_job_settings(
+        job_id: str, body: JobSettings, user: User = Depends(get_current_user)
+    ) -> Job:
+        job = owned_job(job_id, user.id)
+        job.auto_publish = body.auto_publish
+        store.save_job(job)
+        return job
+
+    @app.post("/api/jobs/{job_id}/publish-all", response_model=list[PlatformPost])
+    async def publish_all(
+        job_id: str, body: PublishAllRequest, user: User = Depends(get_current_user)
+    ) -> list[PlatformPost]:
+        job = owned_job(job_id, user.id)
+        if job.status != "done":
+            raise HTTPException(status_code=409, detail="El video aún no está listo para publicar")
+        return await pubmod.publish_all(store, job, body.platform, body.account)
+
+    @app.get("/api/jobs/{job_id}/clips/{clip_id}/thumb")
+    def clip_thumb(
+        job_id: str, clip_id: str, user: User = Depends(get_current_user)
+    ) -> FileResponse:
+        job = owned_job(job_id, user.id)
+        clip = owned_clip(job, clip_id)
+        src = store.source_path(job.id)
+        if not src.exists():
+            raise HTTPException(status_code=404, detail="fuente no disponible")
+        thumbs = store.job_dir(job.id) / "thumbs"
+        thumbs.mkdir(parents=True, exist_ok=True)
+        out = thumbs / f"{clip.id}.jpg"
+        if not out.exists():
+            at = (clip.start + clip.end) / 2
+            try:
+                extract_thumbnail(src, at, out)
+            except Exception:  # noqa: BLE001
+                raise HTTPException(status_code=500, detail="no se pudo generar la miniatura")
+        return FileResponse(out, media_type="image/jpeg")
+
+    @app.patch("/api/jobs/{job_id}/clips/{clip_id}", response_model=Clip)
+    def set_clip_publish(
+        job_id: str, clip_id: str, body: ClipPublish, user: User = Depends(get_current_user)
+    ) -> Clip:
+        job = owned_job(job_id, user.id)
+        clip = store.update_clip(job.id, clip_id, publish=body.publish)
+        if clip is None:
+            raise HTTPException(status_code=404, detail="clip not found")
+        if body.publish and job.auto_publish and job.status == "done":
+            asyncio.create_task(pubmod.auto_publish_clip(store, job.id, clip.id))
+        return clip
+
+    @app.post("/api/jobs/{job_id}/clips/{clip_id}/export", response_model=Clip)
+    async def export(job_id: str, clip_id: str, user: User = Depends(get_current_user)) -> Clip:
+        job = owned_job(job_id, user.id)
+        clip = await export_clip(job.id, clip_id, store)
+        if clip is None:
+            raise HTTPException(status_code=404, detail="clip not found or job not done")
+        return clip
+
+    @app.get("/api/jobs/{job_id}/clips/{clip_id}/download")
+    def download(job_id: str, clip_id: str, user: User = Depends(get_current_user)) -> FileResponse:
+        job = owned_job(job_id, user.id)
+        clip = owned_clip(job, clip_id)
+        if not clip.exported or not clip.export_name:
+            raise HTTPException(status_code=404, detail="clip not exported")
+        path = store.exports_dir(job.id) / clip.export_name
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="export file missing")
+        return FileResponse(path, filename=clip.export_name, media_type="video/mp4")
+
+    @app.get("/api/jobs/{job_id}/clips/{clip_id}/preview")
+    def preview(job_id: str, clip_id: str, user: User = Depends(get_current_user)) -> FileResponse:
+        job = owned_job(job_id, user.id)
+        clip = owned_clip(job, clip_id)
+        if not clip.exported or not clip.export_name:
+            raise HTTPException(status_code=404, detail="clip not exported")
+        path = store.exports_dir(job.id) / clip.export_name
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="export file missing")
+        return FileResponse(path, media_type="video/mp4")
+
+    @app.get("/api/dashboard", response_model=DashboardStats)
+    def dashboard(
+        user: User = Depends(get_current_user), db: Session = Depends(get_db)
+    ) -> DashboardStats:
+        stats = _build_dashboard(store, user.id)
+        stats.accounts = len(
+            list(db.scalars(select(LinkedAccount).where(LinkedAccount.user_id == user.id)))
+        )
+        return stats
+
+    @app.get("/api/jobs/{job_id}/platforms", response_model=list[PlatformPost])
+    def list_posts(job_id: str, user: User = Depends(get_current_user)) -> list[PlatformPost]:
+        job = owned_job(job_id, user.id)
+        return store.get_posts(job.id)
+
+    @app.post(
+        "/api/jobs/{job_id}/clips/{clip_id}/platforms", response_model=PlatformPost, status_code=201
+    )
+    def create_post(
+        job_id: str, clip_id: str, body: PostCreate, user: User = Depends(get_current_user)
+    ) -> PlatformPost:
+        job = owned_job(job_id, user.id)
+        owned_clip(job, clip_id)
+        return store.create_post(job.id, clip_id, **body.model_dump())
+
+    @app.patch("/api/jobs/{job_id}/platforms/{post_id}", response_model=PlatformPost)
+    def update_post(
+        job_id: str, post_id: str, body: PostCreate, user: User = Depends(get_current_user)
+    ) -> PlatformPost:
+        job = owned_job(job_id, user.id)
+        post = store.update_post(job.id, post_id, **body.model_dump())
+        if post is None:
+            raise HTTPException(status_code=404, detail="post not found")
+        return post
+
+    @app.delete("/api/jobs/{job_id}/platforms/{post_id}", status_code=204)
+    def delete_post(job_id: str, post_id: str, user: User = Depends(get_current_user)) -> None:
+        job = owned_job(job_id, user.id)
+        if not store.delete_post(job.id, post_id):
+            raise HTTPException(status_code=404, detail="post not found")
+
+    dist = BACKEND_DIR.parent / "web" / "dist"
+    if dist.exists():
+        app.mount("/", StaticFiles(directory=dist, html=True), name="web")
+    else:
+        @app.get("/")
+        def root() -> dict:
+            return {
+                "name": "edgetape",
+                "docs": "/docs",
+                "hint": "Frontend no construido. Ejecuta 'cd web && npm run build'.",
+            }
+
+    return app
+
+
+app = create_app()

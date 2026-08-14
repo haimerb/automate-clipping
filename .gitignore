@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+backend/storage/
+backend/.venv/
+.venv/
+web/node_modules/
+web/dist/
+*.mp4
+*.mov
+*.wav
+*.mp3
+
+# secretos y local
+.env
+AGENTS.md
+*.log
+backend/server.log
