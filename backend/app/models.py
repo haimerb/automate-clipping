@@ -153,6 +153,11 @@ class PublishAllRequest(BaseModel):
     account: str | None = None
 
 
+class PublishClipRequest(BaseModel):
+    platform: str = "youtube_shorts"
+    account: str | None = None
+
+
 class PostCreate(BaseModel):
     platform: str = "otros"
     status: str = "no_publicado"

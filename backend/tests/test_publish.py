@@ -223,6 +223,96 @@ def test_publish_all_endpoint(tmp_path, auth_headers, sample_video, monkeypatch)
     assert posts[0]["url"] == pubmod.STUDIO_UPLOAD_URL
 
 
+def test_publish_clip_endpoint(tmp_path, auth_headers, sample_video, monkeypatch) -> None:
+    monkeypatch.setattr(ytpub, "is_configured", lambda: False)
+    client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
+    clip_id = store.get_clips(job_id)[0].id
+    client.post(
+        "/api/accounts",
+        json={"platform": "youtube", "name": "Canal Destino", "handle": "@y", "token": None},
+        headers=auth_headers,
+    )
+
+    resp = client.post(
+        f"/api/jobs/{job_id}/clips/{clip_id}/publish",
+        json={"platform": "youtube_shorts", "account": "Canal Destino"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["clip_id"] == clip_id
+    assert body["platform"] == "youtube_shorts"
+    assert body["status"] == "listo"
+    assert body["url"] == pubmod.STUDIO_UPLOAD_URL
+    assert body["account"] == "Canal Destino"
+
+
+def test_publish_clip_endpoint_returns_existing_when_duplicated(
+    tmp_path, auth_headers, sample_video, monkeypatch
+) -> None:
+    monkeypatch.setattr(ytpub, "is_configured", lambda: False)
+    client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
+    clip_id = store.get_clips(job_id)[0].id
+
+    first = client.post(
+        f"/api/jobs/{job_id}/clips/{clip_id}/publish",
+        json={"platform": "tiktok"},
+        headers=auth_headers,
+    )
+    assert first.status_code == 201
+    second = client.post(
+        f"/api/jobs/{job_id}/clips/{clip_id}/publish",
+        json={"platform": "tiktok"},
+        headers=auth_headers,
+    )
+    assert second.status_code == 201
+    assert second.json()["id"] == first.json()["id"]
+
+
+def test_publish_clip_resolves_account_by_platform(
+    tmp_path, auth_headers, sample_video, monkeypatch
+) -> None:
+    monkeypatch.setattr(ytpub, "is_configured", lambda: False)
+    client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
+    clip_id = store.get_clips(job_id)[0].id
+    client.post(
+        "/api/accounts",
+        json={"platform": "youtube", "name": "Solo YouTube", "handle": "@y", "token": None},
+        headers=auth_headers,
+    )
+    client.post(
+        "/api/accounts",
+        json={"platform": "tiktok", "name": "Solo TikTok", "handle": "@t", "token": None},
+        headers=auth_headers,
+    )
+
+    resp = client.post(
+        f"/api/jobs/{job_id}/clips/{clip_id}/publish",
+        json={"platform": "tiktok", "account": "Solo TikTok"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 201
+    assert resp.json()["account"] == "Solo TikTok"
+
+    job = store.get_job(job_id)
+    linked = pubmod._platform_account(store, job, "tiktok", "Solo YouTube")
+    assert linked is None  # la cuenta es de YouTube, no aplica al destino TikTok
+
+
+def test_publish_clip_endpoint_requires_done_job(tmp_path, auth_headers, sample_video) -> None:
+    storage = tmp_path / "storage"
+    client = TestClient(create_app(storage, MockTranscriber()))
+    store = JobStore(storage)
+    job = store.create_job("pending.mp4", owner_id="someone-else")
+
+    resp = client.post(
+        f"/api/jobs/{job.id}/clips/whatever/publish",
+        json={"platform": "youtube_shorts"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 404  # job ajeno -> not found
+
+
 def test_patch_job_settings_auto_publish(tmp_path, auth_headers, sample_video) -> None:
     client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
     resp = client.patch(f"/api/jobs/{job_id}", json={"auto_publish": True}, headers=auth_headers)

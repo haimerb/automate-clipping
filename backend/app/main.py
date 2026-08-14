@@ -31,6 +31,7 @@ from .models import (
     PlatformTotals,
     PostCreate,
     PublishAllRequest,
+    PublishClipRequest,
     RecentPost,
     RegisterRequest,
     TokenResponse,
@@ -370,6 +371,34 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
         if job.status != "done":
             raise HTTPException(status_code=409, detail="El video aún no está listo para publicar")
         return await pubmod.publish_all(store, job, body.platform, body.account)
+
+    @app.post(
+        "/api/jobs/{job_id}/clips/{clip_id}/publish", response_model=PlatformPost, status_code=201
+    )
+    async def publish_clip(
+        job_id: str,
+        clip_id: str,
+        body: PublishClipRequest,
+        user: User = Depends(get_current_user),
+    ) -> PlatformPost:
+        job = owned_job(job_id, user.id)
+        if job.status != "done":
+            raise HTTPException(status_code=409, detail="El video aún no está listo para publicar")
+        clip = owned_clip(job, clip_id)
+        post = await pubmod.publish_one(store, job, clip, body.platform, body.account)
+        if post is None:
+            existing = next(
+                (
+                    p
+                    for p in store.get_posts(job.id)
+                    if p.clip_id == clip_id and p.platform == body.platform
+                ),
+                None,
+            )
+            if existing is not None:
+                return existing
+            raise HTTPException(status_code=409, detail="El clip ya fue publicado o no se pudo publicar")
+        return post
 
     @app.get("/api/jobs/{job_id}/clips/{clip_id}/thumb")
     def clip_thumb(
