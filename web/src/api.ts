@@ -279,16 +279,21 @@ export function exportClip(jobId: string, clipId: string): Promise<Clip> {
   return request<Clip>(`/api/jobs/${jobId}/clips/${clipId}/export`, { method: "POST" });
 }
 
+function withToken(url: string): string {
+  const token = getToken();
+  return token ? `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}` : url;
+}
+
 export function downloadUrl(jobId: string, clipId: string): string {
-  return `/api/jobs/${jobId}/clips/${clipId}/download`;
+  return withToken(`/api/jobs/${jobId}/clips/${clipId}/download`);
 }
 
 export function previewUrl(jobId: string, clipId: string): string {
-  return `/api/jobs/${jobId}/clips/${clipId}/preview`;
+  return withToken(`/api/jobs/${jobId}/clips/${clipId}/preview`);
 }
 
 export function thumbUrl(jobId: string, clipId: string): string {
-  return `/api/jobs/${jobId}/clips/${clipId}/thumb`;
+  return withToken(`/api/jobs/${jobId}/clips/${clipId}/thumb`);
 }
 
 // ── publicaciones ──────────────────────────────────

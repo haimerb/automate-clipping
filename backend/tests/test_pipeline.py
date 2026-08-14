@@ -92,7 +92,7 @@ def test_cut_clip_original_keeps_size(sample_video: Path, tmp_path: Path) -> Non
 
 
 def test_full_pipeline_end_to_end(
-    sample_video: Path, tmp_path: Path, auth_headers
+    sample_video: Path, tmp_path: Path, auth_headers, auth_token
 ) -> None:
     storage = tmp_path / "storage"
     transcriber = MockTranscriber()
@@ -132,6 +132,17 @@ def test_full_pipeline_end_to_end(
     preview = client.get(f"/api/jobs/{job_id}/clips/{target['id']}/preview", headers=auth_headers)
     assert preview.status_code == 200
     assert preview.headers["content-type"] == "video/mp4"
+
+    preview = client.get(
+        f"/api/jobs/{job_id}/clips/{target['id']}/preview?token={auth_token}",
+    )
+    assert preview.status_code == 200
+    assert preview.headers["content-type"] == "video/mp4"
+
+    missing = client.get(
+        f"/api/jobs/{job_id}/clips/{target['id']}/preview?token=token-falso",
+    )
+    assert missing.status_code == 401
 
     marked = client.patch(
         f"/api/jobs/{job_id}/clips/{target['id']}",
