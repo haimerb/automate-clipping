@@ -313,6 +313,71 @@ def test_publish_clip_endpoint_requires_done_job(tmp_path, auth_headers, sample_
     assert resp.status_code == 404  # job ajeno -> not found
 
 
+def test_publish_tiktok_uses_direct_link(tmp_path, auth_headers, sample_video, monkeypatch) -> None:
+    client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
+    client.post(
+        "/api/accounts",
+        json={"platform": "tiktok", "name": "Mi TikTok", "handle": "@t", "token": None},
+        headers=auth_headers,
+    )
+
+    job = store.get_job(job_id)
+    clip = store.get_clips(job_id)[0]
+    post = asyncio.run(pubmod.publish_one(store, job, clip, platform="tiktok", account="Mi TikTok"))
+    assert post is not None
+    assert post.status == "listo"
+    assert post.url == "https://www.tiktok.com/upload"
+    assert post.method == "manual"
+    assert post.account == "Mi TikTok"
+
+
+def test_publish_facebook_reels_uses_direct_link(
+    tmp_path, auth_headers, sample_video, monkeypatch
+) -> None:
+    client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
+    client.post(
+        "/api/accounts",
+        json={"platform": "facebook", "name": "Mi Página", "handle": "@fb", "token": None},
+        headers=auth_headers,
+    )
+
+    job = store.get_job(job_id)
+    clip = store.get_clips(job_id)[0]
+    post = asyncio.run(
+        pubmod.publish_one(store, job, clip, platform="facebook_reels", account="Mi Página")
+    )
+    assert post is not None
+    assert post.status == "listo"
+    assert post.url == "https://www.facebook.com/reels/create"
+    assert post.account == "Mi Página"
+
+
+def test_publish_tiktok_never_uses_youtube_api(tmp_path, auth_headers, sample_video, monkeypatch) -> None:
+    client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
+    client.post(
+        "/api/accounts",
+        json={"platform": "tiktok", "name": "TikTok API", "handle": "@t", "token": "1//REFRESH123"},
+        headers=auth_headers,
+    )
+    monkeypatch.setenv("EDGETAPE_YT_CLIENT_ID", "client-id")
+    monkeypatch.setenv("EDGETAPE_YT_CLIENT_SECRET", "client-secret")
+    upload_called = {"value": False}
+
+    async def fake_upload(*args, **kwargs):
+        upload_called["value"] = True
+        return {"id": "x", "url": "https://www.youtube.com/watch?v=x"}
+
+    monkeypatch.setattr(ytpub, "upload_video", fake_upload)
+
+    job = store.get_job(job_id)
+    clip = store.get_clips(job_id)[0]
+    post = asyncio.run(pubmod.publish_one(store, job, clip, platform="tiktok", account="TikTok API"))
+    assert post is not None
+    assert post.status == "listo"
+    assert post.url == "https://www.tiktok.com/upload"
+    assert upload_called["value"] is False
+
+
 def test_patch_job_settings_auto_publish(tmp_path, auth_headers, sample_video) -> None:
     client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
     resp = client.patch(f"/api/jobs/{job_id}", json={"auto_publish": True}, headers=auth_headers)
