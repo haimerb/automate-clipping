@@ -15,6 +15,16 @@ logger = logging.getLogger(__name__)
 
 STUDIO_UPLOAD_URL = "https://www.youtube.com/upload"
 
+# platform de publicación -> platform de la cuenta vinculada asociada
+PLATFORM_ACCOUNT_MAP = {
+    "youtube_shorts": "youtube",
+    "youtube": "youtube",
+    "tiktok": "tiktok",
+    "facebook_reels": "facebook",
+    "instagram_reels": "instagram",
+    "otros": "otros",
+}
+
 PUBLISHED_STATUSES = {"publicado", "listo"}
 
 
@@ -26,16 +36,20 @@ def _job_description(clip: Clip) -> str:
     )
 
 
-def _youtube_account(store: JobStore, job: Job, account: str | None) -> LinkedAccount | None:
+def _platform_account(
+    store: JobStore, job: Job, platform: str, account: str | None
+) -> LinkedAccount | None:
+    """Resuelve la cuenta vinculada para el destino (plataforma + nombre de cuenta)."""
+    platform_key = PLATFORM_ACCOUNT_MAP.get(platform, "otros")
     db = SessionLocal()
     try:
-        q = select(LinkedAccount).where(LinkedAccount.user_id == job.owner_id)
+        q = select(LinkedAccount).where(
+            LinkedAccount.user_id == job.owner_id,
+            LinkedAccount.platform == platform_key,
+        )
         if account:
-            q = q.where(LinkedAccount.name == account)
-        else:
-            q = q.where(LinkedAccount.platform == "youtube")
-            return db.scalar(q.order_by(LinkedAccount.created_at))
-        return db.scalar(q.limit(1))
+            return db.scalar(q.where(LinkedAccount.name == account).limit(1))
+        return db.scalar(q.order_by(LinkedAccount.created_at))
     finally:
         db.close()
 
@@ -74,7 +88,7 @@ async def publish_one(
     if not path.exists():
         return None
 
-    linked = _youtube_account(store, job, account)
+    linked = _platform_account(store, job, platform, account)
     token = (linked.token if linked else None) or ""
     creds = yt.creds_for(linked)
 

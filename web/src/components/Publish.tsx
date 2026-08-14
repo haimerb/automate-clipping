@@ -7,6 +7,7 @@ import {
   CircularProgress,
   Container,
   FormControlLabel,
+  IconButton,
   MenuItem,
   Paper,
   Select,
@@ -17,12 +18,13 @@ import {
 import {
   PLATFORM_LABELS,
   POST_STATUS_LABELS,
+  accountsForPlatform,
+  formatDuration,
   getAccounts,
   getPosts,
   patchJobSettings,
-  publishAll,
+  publishClip,
   setClipPublish,
-  formatDuration,
 } from "../api";
 import type { Clip, Job, LinkedAccount, PlatformPost } from "../api";
 import ClipPreview from "./ClipPreview";
@@ -37,13 +39,21 @@ interface Props {
   onJobChange: (job: Job) => void;
 }
 
+interface Destination {
+  platform: string;
+  account: string;
+}
+
+const DEFAULT_PLATFORM = "youtube_shorts";
+
 export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange }: Props) {
   const [busy, setBusy] = useState<string | null>(null);
   const [publishingAll, setPublishingAll] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [accounts, setAccounts] = useState<LinkedAccount[]>([]);
-  const [account, setAccount] = useState<string>("");
-  const [platform, setPlatform] = useState("youtube_shorts");
+  const [dests, setDests] = useState<Record<string, Destination[]>>({});
+  const [draftPlatform, setDraftPlatform] = useState<Record<string, string>>({});
+  const [draftAccount, setDraftAccount] = useState<Record<string, string>>({});
   const [autoPublish, setAutoPublish] = useState(job.auto_publish);
   const [posts, setPosts] = useState<PlatformPost[]>([]);
   const [doneCount, setDoneCount] = useState(0);
@@ -63,9 +73,12 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
     getAccounts()
       .then((list) => {
         setAccounts(list);
-        if (!list.some((a) => a.name === account)) {
-          const first = list.find((a) => a.platform === "youtube") ?? list[0];
-          if (first) setAccount(first.name);
+        for (const clip of selected) {
+          const platform = draftPlatform[clip.id] ?? DEFAULT_PLATFORM;
+          const available = accountsForPlatform(list, platform);
+          if (!draftAccount[clip.id] && available[0]) {
+            setDraftAccount((prev) => ({ ...prev, [clip.id]: available[0].name }));
+          }
         }
       })
       .catch(() => setAccounts([]));
@@ -74,14 +87,51 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
 
   useEffect(() => setAutoPublish(job.auto_publish), [job.auto_publish]);
 
-  const postByClip = useMemo(() => {
+  const postByDest = useMemo(() => {
     const map: Record<string, PlatformPost> = {};
     for (const p of posts) {
-      if (p.clip_id in map) continue;
-      map[p.clip_id] = p;
+      const key = `${p.clip_id}|${p.platform}`;
+      if (key in map) continue;
+      map[key] = p;
     }
     return map;
   }, [posts]);
+
+  const destCount = useMemo(
+    () => selected.reduce((acc, clip) => acc + (dests[clip.id] ?? []).length, 0),
+    [selected, dests],
+  );
+
+  function defaultDraft(clipId: string): { platform: string; account: string } {
+    const platform = draftPlatform[clipId] ?? DEFAULT_PLATFORM;
+    const available = accountsForPlatform(accounts, platform);
+    const account = available.some((a) => a.name === draftAccount[clipId])
+      ? draftAccount[clipId]
+      : available[0]?.name ?? "";
+    return { platform, account };
+  }
+
+  function changeDraftPlatform(clipId: string, platform: string) {
+    setDraftPlatform((prev) => ({ ...prev, [clipId]: platform }));
+    const available = accountsForPlatform(accounts, platform);
+    setDraftAccount((prev) => ({ ...prev, [clipId]: available[0]?.name ?? "" }));
+  }
+
+  function addDestination(clip: Clip) {
+    const draft = defaultDraft(clip.id);
+    if (!draft.platform) return;
+    setDests((prev) => ({
+      ...prev,
+      [clip.id]: [...(prev[clip.id] ?? []), { ...draft }],
+    }));
+  }
+
+  function removeDestination(clipId: string, index: number) {
+    setDests((prev) => ({
+      ...prev,
+      [clipId]: (prev[clipId] ?? []).filter((_, i) => i !== index),
+    }));
+  }
 
   async function togglePublish(clip: Clip, publish: boolean) {
     setBusy(clip.id);
@@ -108,20 +158,41 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
     }
   }
 
-  async function onPublishAll() {
-    if (selected.length === 0) return;
+  async function publishOneDestination(clip: Clip, dest: Destination, index: number) {
+    const key = `${clip.id}|${index}`;
+    setBusy(key);
+    setError(null);
+    try {
+      await publishClip(job.id, clip.id, dest.platform, dest.account || null);
+      setDoneCount((c) => c + 1);
+      await refreshPosts();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo publicar el clip");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function publishAllDestinations() {
+    const targets = selected.flatMap((clip) =>
+      (dests[clip.id] ?? []).map((dest) => ({ clip, dest })),
+    );
+    if (targets.length === 0) return;
     setPublishingAll(true);
     setError(null);
     setDoneCount(0);
-    try {
-      const created = await publishAll(job.id, platform, account || null);
-      setDoneCount(created.length);
-      await refreshPosts();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo publicar todo");
-    } finally {
-      setPublishingAll(false);
+    for (const { clip, dest } of targets) {
+      try {
+        await publishClip(job.id, clip.id, dest.platform, dest.account || null);
+        setDoneCount((c) => c + 1);
+      } catch (err) {
+        if (!error) {
+          setError(err instanceof Error ? err.message : "No se pudo publicar todo");
+        }
+      }
     }
+    await refreshPosts();
+    setPublishingAll(false);
   }
 
   return (
@@ -151,8 +222,8 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
 
         {doneCount > 0 && (
           <Alert severity="success" sx={{ mt: 3 }}>
-            {doneCount} {doneCount === 1 ? "clip publicado" : "clips publicados"} — revisa cada
-            tarjeta para ver el estado y el enlace.
+            {doneCount} {doneCount === 1 ? "publicación creada" : "publicaciones creadas"} — revisa
+            cada destino para ver el estado y el enlace.
           </Alert>
         )}
 
@@ -179,56 +250,29 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
                   <Typography variant="overline" sx={{ display: "block" }}>
                     Publicación en bloque
                   </Typography>
-                  <Typography variant="body2" color="text.secondary" sx={{ maxWidth: "52ch" }}>
-                    Exporta los {selected.length} clips y los publica en YouTube. Si tu cuenta está
-                    conectada con las credenciales de la API, se suben solos; si no, quedan listos
-                    con el enlace directo para subirlos.
+                  <Typography variant="body2" color="text.secondary" sx={{ maxWidth: "58ch" }}>
+                    Configura en cada tarjeta a qué plataforma y canal publicar cada clip. Un clip
+                    puede ir a varios destinos. Aquí puedes lanzar todos los destinos de una vez.
                   </Typography>
                 </Box>
-                <Stack
-                  direction={{ xs: "column", sm: "row" }}
-                  spacing={1.5}
-                  sx={{ alignItems: { xs: "stretch", sm: "center" } }}
-                >
-                  <Select
-                    size="small"
-                    value={platform}
-                    onChange={(e) => setPlatform(e.target.value)}
-                    sx={{ minWidth: 170 }}
+                <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ alignItems: "center" }}>
+                  <Typography
+                    variant="body2"
+                    sx={{ fontFamily: "'Fragment Mono', monospace", fontSize: "0.72rem" }}
                   >
-                    {Object.entries(PLATFORM_LABELS).map(([value, label]) => (
-                      <MenuItem key={value} value={value}>
-                        {label}
-                      </MenuItem>
-                    ))}
-                  </Select>
-                  <Select
-                    size="small"
-                    value={account}
-                    onChange={(e) => setAccount(e.target.value)}
-                    sx={{ minWidth: 170 }}
-                  >
-                    <MenuItem value="">— sin cuenta —</MenuItem>
-                    {accounts.map((a) => (
-                      <MenuItem key={a.id} value={a.name}>
-                        {a.name}
-                        {a.handle ? ` (${a.handle})` : ""}
-                      </MenuItem>
-                    ))}
-                  </Select>
+                    {destCount} {destCount === 1 ? "destino" : "destinos"}
+                  </Typography>
                   <Button
                     variant="contained"
-                    onClick={() => void onPublishAll()}
-                    disabled={publishingAll || selected.length === 0}
+                    onClick={() => void publishAllDestinations()}
+                    disabled={publishingAll || destCount === 0}
                     startIcon={
-                      publishingAll ? (
-                        <CircularProgress size={16} color="inherit" />
-                      ) : undefined
+                      publishingAll ? <CircularProgress size={16} color="inherit" /> : undefined
                     }
                   >
                     {publishingAll
                       ? "Publicando…"
-                      : `Publicar ${selected.length} ${selected.length === 1 ? "clip" : "clips"}`}
+                      : `Publicar ${destCount} ${destCount === 1 ? "destino" : "destinos"}`}
                   </Button>
                 </Stack>
               </Stack>
@@ -245,8 +289,8 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
                     Publicación automática
                   </Typography>
                   <Typography variant="body2" color="text.secondary" sx={{ maxWidth: "56ch" }}>
-                    Al activarla, cada clip que marques en el carrete se exporta y publica solo, sin
-                    pasar por esta pantalla.
+                    Al activarla, cada clip que marques en el carrete se exporta y publica solo a
+                    YouTube, sin pasar por esta pantalla.
                   </Typography>
                 </Box>
                 <FormControlLabel
@@ -271,7 +315,9 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
 
             <Stack spacing={3} sx={{ mt: 3 }}>
               {selected.map((clip) => {
-                const post = postByClip[clip.id];
+                const clipDests = dests[clip.id] ?? [];
+                const draft = defaultDraft(clip.id);
+                const draftAvailable = accountsForPlatform(accounts, draft.platform);
                 return (
                   <Paper
                     key={clip.id}
@@ -313,46 +359,163 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
                             “{clip.line}”
                           </Typography>
                         </Box>
-                        <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
-                          {post && (
-                            <Chip
-                              size="small"
-                              variant={post.status === "publicado" ? "filled" : "outlined"}
-                              sx={{
-                                bgcolor: post.status === "publicado" ? MARK : "transparent",
-                                color: post.status === "publicado" ? "#14161A" : undefined,
-                                borderColor: post.status === "publicado" ? MARK : undefined,
-                              }}
-                              label={POST_STATUS_LABELS[post.status] ?? post.status}
-                            />
-                          )}
-                          <Button
-                            size="small"
-                            variant={clip.publish ? "contained" : "outlined"}
-                            color={clip.publish ? "secondary" : "primary"}
-                            onClick={() => void togglePublish(clip, !clip.publish)}
-                            disabled={busy === clip.id || publishingAll}
-                            sx={{ whiteSpace: "nowrap", color: clip.publish ? "#14161A" : undefined }}
-                          >
-                            {clip.publish ? "✔ Para publicar" : "Para publicar"}
-                          </Button>
-                        </Stack>
-                      </Stack>
-
-                      {post?.url && (
                         <Button
                           size="small"
-                          href={post.url}
-                          target="_blank"
-                          rel="noreferrer"
-                          startIcon={<span>↗</span>}
-                          sx={{ mt: 0.5, fontSize: "0.7rem" }}
+                          variant={clip.publish ? "contained" : "outlined"}
+                          color={clip.publish ? "secondary" : "primary"}
+                          onClick={() => void togglePublish(clip, !clip.publish)}
+                          disabled={busy === clip.id || publishingAll}
+                          sx={{ whiteSpace: "nowrap", color: clip.publish ? "#14161A" : undefined }}
                         >
-                          {post.status === "publicado"
-                            ? "Ver en YouTube"
-                            : "Subirlo ahora a YouTube Studio"}
+                          {clip.publish ? "✔ Para publicar" : "Para publicar"}
                         </Button>
-                      )}
+                      </Stack>
+
+                      <Box
+                        sx={{
+                          mt: 2,
+                          borderTop: "1px dashed",
+                          borderColor: "divider",
+                          pt: 2,
+                        }}
+                      >
+                        <Typography variant="overline" sx={{ display: "block" }}>
+                          Destinos
+                        </Typography>
+                        <Stack spacing={1} sx={{ mt: 1 }}>
+                          {clipDests.length === 0 && (
+                            <Typography variant="body2" color="text.secondary">
+                              Añade un destino (plataforma y canal) para este clip.
+                            </Typography>
+                          )}
+                          {clipDests.map((dest, index) => {
+                            const post = postByDest[`${clip.id}|${dest.platform}`];
+                            const key = `${clip.id}|${index}`;
+                            const busyHere = busy === key;
+                            return (
+                              <Paper
+                                key={key}
+                                variant="outlined"
+                                sx={{ p: 1.25, bgcolor: "background.paper" }}
+                              >
+                                <Stack
+                                  direction={{ xs: "column", sm: "row" }}
+                                  spacing={1.5}
+                                  sx={{
+                                    justifyContent: "space-between",
+                                    alignItems: { xs: "stretch", sm: "center" },
+                                  }}
+                                >
+                                  <Stack direction="row" spacing={1} sx={{ alignItems: "center", flexWrap: "wrap" }}>
+                                    <Chip
+                                      size="small"
+                                      label={PLATFORM_LABELS[dest.platform] ?? dest.platform}
+                                      variant="outlined"
+                                    />
+                                    <Typography
+                                      variant="body2"
+                                      color="text.secondary"
+                                      sx={{ fontSize: "0.78rem" }}
+                                    >
+                                      {dest.account
+                                        ? `→ ${dest.account}`
+                                        : "→ sin cuenta vinculada"}
+                                    </Typography>
+                                    {post && (
+                                      <Chip
+                                        size="small"
+                                        variant={post.status === "publicado" ? "filled" : "outlined"}
+                                        sx={{
+                                          bgcolor: post.status === "publicado" ? MARK : "transparent",
+                                          color: post.status === "publicado" ? "#14161A" : undefined,
+                                          borderColor: post.status === "publicado" ? MARK : undefined,
+                                        }}
+                                        label={POST_STATUS_LABELS[post.status] ?? post.status}
+                                      />
+                                    )}
+                                  </Stack>
+                                  <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+                                    {post?.url && (
+                                      <Button
+                                        size="small"
+                                        href={post.url}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        sx={{ fontSize: "0.7rem" }}
+                                      >
+                                        {post.status === "publicado" ? "Ver" : "Subirlo"} ↗
+                                      </Button>
+                                    )}
+                                    <Button
+                                      size="small"
+                                      variant="contained"
+                                      disabled={busyHere || publishingAll}
+                                      onClick={() => void publishOneDestination(clip, dest, index)}
+                                      startIcon={
+                                        busyHere ? (
+                                          <CircularProgress size={14} color="inherit" />
+                                        ) : undefined
+                                      }
+                                    >
+                                      {busyHere ? "Publicando…" : "Publicar"}
+                                    </Button>
+                                    <IconButton
+                                      size="small"
+                                      aria-label="quitar destino"
+                                      onClick={() => removeDestination(clip.id, index)}
+                                      disabled={publishingAll}
+                                    >
+                                      ✕
+                                    </IconButton>
+                                  </Stack>
+                                </Stack>
+                              </Paper>
+                            );
+                          })}
+                        </Stack>
+
+                        <Stack
+                          direction={{ xs: "column", sm: "row" }}
+                          spacing={1.5}
+                          sx={{ mt: 1.5, alignItems: { xs: "stretch", sm: "center" } }}
+                        >
+                          <Select
+                            size="small"
+                            value={draft.platform}
+                            onChange={(e) => changeDraftPlatform(clip.id, e.target.value)}
+                            sx={{ minWidth: 170 }}
+                          >
+                            {Object.entries(PLATFORM_LABELS).map(([value, label]) => (
+                              <MenuItem key={value} value={value}>
+                                {label}
+                              </MenuItem>
+                            ))}
+                          </Select>
+                          <Select
+                            size="small"
+                            value={draft.account}
+                            onChange={(e) =>
+                              setDraftAccount((prev) => ({ ...prev, [clip.id]: e.target.value }))
+                            }
+                            sx={{ minWidth: 190 }}
+                          >
+                            <MenuItem value="">— sin cuenta —</MenuItem>
+                            {draftAvailable.map((a) => (
+                              <MenuItem key={a.id} value={a.name}>
+                                {a.name}
+                                {a.handle ? ` (${a.handle})` : ""}
+                              </MenuItem>
+                            ))}
+                          </Select>
+                          <Button
+                            variant="outlined"
+                            onClick={() => addDestination(clip)}
+                            disabled={publishingAll}
+                          >
+                            Añadir destino
+                          </Button>
+                        </Stack>
+                      </Box>
 
                       <Box sx={{ mt: 2, borderTop: "1px dashed", borderColor: "divider", pt: 2 }}>
                         <MonetizationPanel jobId={job.id} clip={clip} refreshToken={posts.length} />
