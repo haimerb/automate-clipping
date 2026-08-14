@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import os
 import uuid
 from pathlib import Path
@@ -37,8 +36,9 @@ from .models import (
     TokenResponse,
     UserOut,
 )
-from .processing import export_clip, run_job
+from .processing import export_clip
 from .storage import JobStore
+from .tasks import enqueue_auto_publish, enqueue_job
 from .transcriber import build_transcriber
 from .users import LinkedAccount, User
 from .youtube import is_youtube_url
@@ -324,7 +324,7 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
         with dest.open("wb") as fh:
             while chunk := await file.read(1024 * 1024):
                 fh.write(chunk)
-        asyncio.create_task(run_job(job.id, store, tsc, sel))
+        enqueue_job(job.id, str(store.root))
         return store.get_job(job.id)  # type: ignore[return-value]
 
     @app.post("/api/jobs/youtube", status_code=202, response_model=Job)
@@ -336,7 +336,7 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
         job = store.create_job(
             "video de YouTube", source="youtube", source_url=body.url.strip(), owner_id=user.id
         )
-        asyncio.create_task(run_job(job.id, store, tsc, sel))
+        enqueue_job(job.id, str(store.root))
         return store.get_job(job.id)  # type: ignore[return-value]
 
     @app.get("/api/jobs", response_model=list[Job])
@@ -400,7 +400,7 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
         if clip is None:
             raise HTTPException(status_code=404, detail="clip not found")
         if body.publish and job.auto_publish and job.status == "done":
-            asyncio.create_task(pubmod.auto_publish_clip(store, job.id, clip.id))
+            enqueue_auto_publish(job.id, clip.id, str(store.root))
         return clip
 
     @app.post("/api/jobs/{job_id}/clips/{clip_id}/export", response_model=Clip)

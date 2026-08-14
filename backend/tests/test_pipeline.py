@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -11,14 +11,23 @@ from fastapi.testclient import TestClient
 
 from app.main import create_app
 from app.media import cut_clip, probe_duration
-from app.processing import run_job
-from app.storage import JobStore
 from app.transcriber import MockTranscriber
 
 pytestmark = pytest.mark.skipif(
     shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
     reason="ffmpeg/ffprobe required",
 )
+
+
+def _wait_job(client: TestClient, job_id: str, headers: dict, timeout: float = 90.0) -> dict:
+    """Espera a que el job termine (lo procesa el backend en segundo plano)."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        job = client.get(f"/api/jobs/{job_id}", headers=headers).json()
+        if job["status"] in ("done", "failed"):
+            return job
+        time.sleep(0.2)
+    raise AssertionError(f"el job {job_id} no terminó a tiempo")
 
 
 @pytest.fixture(scope="module")
@@ -97,9 +106,7 @@ def test_full_pipeline_end_to_end(
     assert resp.status_code == 202
     job_id = resp.json()["id"]
 
-    asyncio.run(run_job(job_id, JobStore(storage), transcriber))
-
-    job = client.get(f"/api/jobs/{job_id}", headers=auth_headers).json()
+    job = _wait_job(client, job_id, auth_headers)
     assert job["status"] == "done", job.get("error")
     assert job["clip_count"] > 0
 
@@ -139,7 +146,6 @@ def test_youtube_job_downloads_and_processes(
     sample_video: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, auth_headers
 ) -> None:
     storage = tmp_path / "storage"
-    store = JobStore(storage)
     transcriber = MockTranscriber()
     app = create_app(storage, transcriber)
     client = TestClient(app)
@@ -156,9 +162,7 @@ def test_youtube_job_downloads_and_processes(
     assert resp.status_code == 202
     job_id = resp.json()["id"]
 
-    asyncio.run(run_job(job_id, store, transcriber))
-
-    job = client.get(f"/api/jobs/{job_id}", headers=auth_headers).json()
+    job = _wait_job(client, job_id, auth_headers)
     assert job["status"] == "done", job.get("error")
     assert job["source"] == "youtube"
     assert job["filename"] == "Mi video de YouTube"
