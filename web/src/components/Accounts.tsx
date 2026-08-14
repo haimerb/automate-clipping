@@ -330,7 +330,7 @@ export default function Accounts() {
                 />
               </Box>
 
-              {isYoutube && (
+              {isYoutube ? (
                 <Collapse in={isYoutube} sx={{ mt: 3 }}>
                   <Paper variant="outlined" sx={{ p: 2, bgcolor: "#F7F9FB" }}>
                     <Typography variant="overline" sx={{ display: "block", color: EDGE }}>
@@ -387,6 +387,13 @@ export default function Accounts() {
                     </Alert>
                   </Paper>
                 </Collapse>
+              ) : (
+                <Alert severity="info" sx={{ mt: 3 }}>
+                  Por ahora <b>{ACCOUNT_PLATFORM_LABELS[form.platform] ?? form.platform}</b> se
+                  publica con respaldo: edgetape exporta el clip y te deja el enlace directo de
+                  subida con la cuenta atribuida. La publicación automática por API real (OAuth) está{" "}
+                  <b>pendiente</b> para TikTok y Facebook.
+                </Alert>
               )}
             </DialogContent>
             <DialogActions>
