@@ -59,17 +59,33 @@ def create_token(user: User) -> str:
     return jwt.encode(payload, _secret(), algorithm=_ALGO)
 
 
-def get_current_user(
-    cred: HTTPAuthorizationCredentials | None = Depends(_bearer),
-    db: Session = Depends(get_db),
-) -> User:
-    if cred is None:
-        raise HTTPException(status_code=401, detail="Autenticación requerida")
+def _decode_token(raw: str, db: Session) -> User:
     try:
-        payload = jwt.decode(cred.credentials, _secret(), algorithms=[_ALGO])
+        payload = jwt.decode(raw, _secret(), algorithms=[_ALGO])
     except jwt.PyJWTError:
         raise HTTPException(status_code=401, detail="Sesión inválida o expirada")
     user = db.get(User, payload.get("sub"))
     if user is None:
         raise HTTPException(status_code=401, detail="Usuario no encontrado")
     return user
+
+
+def get_current_user(
+    cred: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    db: Session = Depends(get_db),
+) -> User:
+    if cred is None:
+        raise HTTPException(status_code=401, detail="Autenticación requerida")
+    return _decode_token(cred.credentials, db)
+
+
+def get_current_user_media(
+    cred: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    token: str | None = None,
+    db: Session = Depends(get_db),
+) -> User:
+    """Acepta el token también como query param, para <img>/<video> del navegador."""
+    raw = cred.credentials if cred else token
+    if not raw:
+        raise HTTPException(status_code=401, detail="Autenticación requerida")
+    return _decode_token(raw, db)

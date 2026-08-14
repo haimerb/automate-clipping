@@ -231,13 +231,20 @@ def test_patch_job_settings_auto_publish(tmp_path, auth_headers, sample_video) -
     assert store.get_job(job_id).auto_publish is True
 
 
-def test_clip_thumbnail(tmp_path, auth_headers, sample_video) -> None:
+def test_clip_thumbnail(tmp_path, auth_headers, auth_token, sample_video) -> None:
     client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
     clip_id = store.get_clips(job_id)[0].id
     resp = client.get(f"/api/jobs/{job_id}/clips/{clip_id}/thumb", headers=auth_headers)
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "image/jpeg"
     assert len(resp.content) > 500
+
+    resp = client.get(f"/api/jobs/{job_id}/clips/{clip_id}/thumb?token={auth_token}")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/jpeg"
+
+    resp = client.get(f"/api/jobs/{job_id}/clips/{clip_id}/thumb?token=token-falso")
+    assert resp.status_code == 401
 
 
 def test_youtube_auth_url_builds_link(tmp_path, auth_headers, sample_video, monkeypatch) -> None:

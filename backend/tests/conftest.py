@@ -19,7 +19,7 @@ from app.main import create_app  # noqa: E402
 
 
 @pytest.fixture(scope="session")
-def auth_headers() -> dict[str, str]:
+def auth_token() -> str:
     app = create_app(tempfile.mkdtemp(prefix="edgetape-test-store-"))
     client = TestClient(app)
     email = "test@edgetape.dev"
@@ -31,8 +31,12 @@ def auth_headers() -> dict[str, str]:
     if resp.status_code == 409:
         resp = client.post("/api/auth/login", json={"email": email, "password": password})
     assert resp.status_code in (200, 201), resp.text
-    token = resp.json()["access_token"]
-    return {"Authorization": f"Bearer {token}"}
+    return resp.json()["access_token"]
+
+
+@pytest.fixture(scope="session")
+def auth_headers(auth_token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {auth_token}"}
 
 
 @pytest.fixture(scope="session")
