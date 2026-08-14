@@ -275,6 +275,19 @@ export function publishAll(
   });
 }
 
+export function publishClip(
+  jobId: string,
+  clipId: string,
+  platform: string,
+  account: string | null,
+): Promise<PlatformPost> {
+  return request<PlatformPost>(`/api/jobs/${jobId}/clips/${clipId}/publish`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ platform, account }),
+  });
+}
+
 export function exportClip(jobId: string, clipId: string): Promise<Clip> {
   return request<Clip>(`/api/jobs/${jobId}/clips/${clipId}/export`, { method: "POST" });
 }
@@ -358,6 +371,24 @@ export const PLATFORM_LABELS: Record<string, string> = {
   instagram_reels: "Instagram Reels",
   otros: "Otra plataforma",
 };
+
+// plataforma de publicación -> platform de la cuenta vinculada asociada
+export const PLATFORM_ACCOUNT_PLATFORM: Record<string, string> = {
+  youtube_shorts: "youtube",
+  youtube: "youtube",
+  tiktok: "tiktok",
+  facebook_reels: "facebook",
+  instagram_reels: "instagram",
+  otros: "otros",
+};
+
+export function accountsForPlatform(
+  accounts: LinkedAccount[],
+  platform: string,
+): LinkedAccount[] {
+  const key = PLATFORM_ACCOUNT_PLATFORM[platform] ?? "otros";
+  return accounts.filter((a) => a.platform === key);
+}
 
 export const POST_STATUS_LABELS: Record<string, string> = {
   no_publicado: "Sin publicar",
