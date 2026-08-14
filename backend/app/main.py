@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .auth import create_token, get_current_user, hash_password, verify_password
+from .auth import create_token, get_current_user, get_current_user_media, hash_password, verify_password
 from .db import get_db, init_db
 from . import publish as pubmod
 from . import youtube_publish as ytpub
@@ -373,7 +373,7 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
 
     @app.get("/api/jobs/{job_id}/clips/{clip_id}/thumb")
     def clip_thumb(
-        job_id: str, clip_id: str, user: User = Depends(get_current_user)
+        job_id: str, clip_id: str, user: User = Depends(get_current_user_media)
     ) -> FileResponse:
         job = owned_job(job_id, user.id)
         clip = owned_clip(job, clip_id)
@@ -412,7 +412,7 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
         return clip
 
     @app.get("/api/jobs/{job_id}/clips/{clip_id}/download")
-    def download(job_id: str, clip_id: str, user: User = Depends(get_current_user)) -> FileResponse:
+    def download(job_id: str, clip_id: str, user: User = Depends(get_current_user_media)) -> FileResponse:
         job = owned_job(job_id, user.id)
         clip = owned_clip(job, clip_id)
         if not clip.exported or not clip.export_name:
@@ -423,7 +423,7 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
         return FileResponse(path, filename=clip.export_name, media_type="video/mp4")
 
     @app.get("/api/jobs/{job_id}/clips/{clip_id}/preview")
-    def preview(job_id: str, clip_id: str, user: User = Depends(get_current_user)) -> FileResponse:
+    def preview(job_id: str, clip_id: str, user: User = Depends(get_current_user_media)) -> FileResponse:
         job = owned_job(job_id, user.id)
         clip = owned_clip(job, clip_id)
         if not clip.exported or not clip.export_name:
