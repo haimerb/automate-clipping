@@ -155,7 +155,7 @@ export default function Accounts() {
           sx={{ justifyContent: "space-between", alignItems: { xs: "stretch", md: "flex-end" } }}
         >
           <Box>
-            <Typography variant="overline">Sección 04 — dónde publicas</Typography>
+            <Typography variant="overline">Dónde publicas</Typography>
             <Typography variant="h4" sx={{ mt: 0.5 }}>
               Cuentas vinculadas
             </Typography>
@@ -170,6 +170,22 @@ export default function Accounts() {
           credenciales OAuth de tu app de Google Cloud y conectar la cuenta para publicar clips
           directamente con la API.
         </Typography>
+
+        {accounts.length > 0 && (
+          <Stack direction="row" spacing={1} sx={{ mt: 2, flexWrap: "wrap" }}>
+            <Chip
+              size="small"
+              variant="outlined"
+              label={`${accounts.length} ${accounts.length === 1 ? "cuenta" : "cuentas"}`}
+            />
+            <Chip
+              size="small"
+              variant="filled"
+              sx={{ bgcolor: MARK, color: "#14161A" }}
+              label={`${accounts.filter((a) => a.token).length} conectadas`}
+            />
+          </Stack>
+        )}
 
         {error && (
           <Alert severity="error" sx={{ mt: 3 }}>
@@ -214,6 +230,18 @@ export default function Accounts() {
                           right: 0,
                           height: 3,
                           background: apiReady ? EDGE : "divider",
+                        }}
+                      />
+                    )}
+                    {account.platform !== "youtube" && (
+                      <Box
+                        sx={{
+                          position: "absolute",
+                          top: 0,
+                          left: 0,
+                          right: 0,
+                          height: 3,
+                          background: connected ? EDGE : "divider",
                         }}
                       />
                     )}
