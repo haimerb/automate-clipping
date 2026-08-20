@@ -24,6 +24,7 @@ import {
   TableRow,
   Typography,
 } from "@mui/material";
+import { EDGE, MARK } from "../theme";
 
 interface Props {
   onNewJob: () => void;
@@ -37,6 +38,60 @@ async function openJob(jobId: string, onOpenJob: (job: Job) => void) {
     return;
   }
   onOpenJob(job);
+}
+
+function StatCard({
+  label,
+  value,
+  caption,
+  highlight = false,
+}: {
+  label: string;
+  value: React.ReactNode;
+  caption?: string;
+  highlight?: boolean;
+}) {
+  return (
+    <Paper
+      sx={{
+        p: 2.5,
+        height: "100%",
+        display: "flex",
+        flexDirection: "column",
+        gap: 0.5,
+        ...(highlight ? { bgcolor: MARK } : {}),
+      }}
+    >
+      <Typography
+        variant="overline"
+        sx={{ display: "block", fontSize: "0.58rem", ...(highlight ? { color: "#14161A" } : {}) }}
+      >
+        {label}
+      </Typography>
+      <Typography
+        variant="h4"
+        sx={{
+          lineHeight: 1.1,
+          ...(highlight ? { color: "#14161A" } : {}),
+        }}
+      >
+        {value}
+      </Typography>
+      {caption && (
+        <Typography
+          variant="caption"
+          sx={{
+            mt: "auto",
+            pt: 0.5,
+            fontSize: "0.68rem",
+            ...(highlight ? { color: "rgba(20,22,26,.72)" } : { color: "text.secondary" }),
+          }}
+        >
+          {caption}
+        </Typography>
+      )}
+    </Paper>
+  );
 }
 
 export default function Dashboard({ onNewJob, onOpenJob }: Props) {
@@ -60,202 +115,218 @@ export default function Dashboard({ onNewJob, onOpenJob }: Props) {
 
   const platforms = Object.entries(stats?.by_platform ?? {});
   const totalByPlatform = stats?.total_earnings ?? 0;
+  const pending = stats ? stats.posts - stats.publicados : 0;
 
   return (
-    <Box component="section" sx={{ py: { xs: 5, md: 7 } }}>
-      <Container maxWidth="lg">
-        <Typography variant="overline">Sección 05 — panel de ganancias</Typography>
-        <Typography variant="h4" sx={{ mt: 0.5 }}>
-          Lo que estás ganando
-        </Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>
-          Registra manualmente cada publicación que haces de tus clips. Así tienes el total por
-          plataforma y por video sin ir plataforma por plataforma.
-        </Typography>
-
-        {error && (
-          <Alert severity="error" sx={{ mt: 3 }}>
-            {error}
-          </Alert>
-        )}
-
-        <Grid container spacing={2.5} sx={{ mt: 1 }}>
-          <Grid size={{ xs: 12, sm: 6, md: 4 }}>
-            <Paper sx={{ p: 3, bgcolor: "#FFC647" }}>
-              <Typography variant="overline" sx={{ color: "#14161A" }}>
-                Ganancia total
-              </Typography>
-              <Typography variant="h4" sx={{ color: "#14161A", mt: 0.5 }}>
-                {formatMoney(totalByPlatform, "USD")}
-              </Typography>
-              <Typography variant="body2" sx={{ color: "#14161A", opacity: 0.7 }}>
-                suma de todas las publicaciones
-              </Typography>
-            </Paper>
-          </Grid>
-          <Grid size={{ xs: 6, sm: 4, md: 2 }}>
-            <Paper sx={{ p: 3, height: "100%" }}>
-              <Typography variant="overline">Videos procesados</Typography>
-              <Typography variant="h4" sx={{ mt: 0.5 }}>
-                {stats?.jobs ?? 0}
-              </Typography>
-            </Paper>
-          </Grid>
-          <Grid size={{ xs: 6, sm: 4, md: 2 }}>
-            <Paper sx={{ p: 3, height: "100%" }}>
-              <Typography variant="overline">Clips generados</Typography>
-              <Typography variant="h4" sx={{ mt: 0.5 }}>
-                {stats?.clips ?? 0}
-              </Typography>
-            </Paper>
-          </Grid>
-          <Grid size={{ xs: 6, sm: 4, md: 2 }}>
-            <Paper sx={{ p: 3, height: "100%" }}>
-              <Typography variant="overline">Publicaciones</Typography>
-              <Typography variant="h4" sx={{ mt: 0.5 }}>
-                {stats?.posts ?? 0}
-              </Typography>
-              <Typography variant="caption" color="text.secondary">
-                {stats?.publicados ?? 0} publicadas · {stats ? stats.posts - stats.publicados : 0}{" "}
-                pendientes
-              </Typography>
-            </Paper>
-          </Grid>
-          <Grid size={{ xs: 6, sm: 4, md: 2 }}>
-            <Paper sx={{ p: 3, height: "100%" }}>
-              <Typography variant="overline">Vistas totales</Typography>
-              <Typography variant="h4" sx={{ mt: 0.5 }}>
-                {(stats?.total_views ?? 0).toLocaleString("es")}
-              </Typography>
-            </Paper>
-          </Grid>
-        </Grid>
-
-        <Grid container spacing={2.5} sx={{ mt: 0.5 }}>
-          <Grid size={{ xs: 12, sm: 6, md: 4 }}>
-            <Paper sx={{ p: 3, height: "100%" }}>
-              <Typography variant="overline">Me gusta</Typography>
-              <Typography variant="h4" sx={{ mt: 0.5 }}>
-                {(stats?.total_likes ?? 0).toLocaleString("es")}
-              </Typography>
-            </Paper>
-          </Grid>
-          <Grid size={{ xs: 12, sm: 6, md: 4 }}>
-            <Paper sx={{ p: 3, height: "100%" }}>
-              <Typography variant="overline">Cuentas vinculadas</Typography>
-              <Typography variant="h4" sx={{ mt: 0.5 }}>
-                {accounts.length}
-              </Typography>
-              <Typography variant="caption" color="text.secondary">
-                {accounts.length === 0
-                  ? "vincula tus cuentas en CUENTAS"
-                  : accounts.map((a) => ACCOUNT_PLATFORM_LABELS[a.platform] ?? a.platform).join(" · ")}
-              </Typography>
-            </Paper>
-          </Grid>
-        </Grid>
-
-        <Grid container spacing={4} sx={{ mt: 2 }}>
-          <Grid size={{ xs: 12, md: 6 }}>
-            <Typography variant="h5" sx={{ mb: 2 }}>
-              Por plataforma
-            </Typography>
-            {platforms.length === 0 ? (
-              <Paper sx={{ p: 3, borderStyle: "dashed" }}>
-                <Typography variant="body2" color="text.secondary">
-                  Todavía no hay publicaciones registradas.
-                </Typography>
-              </Paper>
-            ) : (
-              <Paper sx={{ overflowX: "auto" }}>
-                <Table size="small">
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>Plataforma</TableCell>
-                      <TableCell align="right">Posts</TableCell>
-                      <TableCell align="right">Vistas</TableCell>
-                      <TableCell align="right">Ganancias</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {platforms.map(([key, tot]) => (
-                      <TableRow key={key}>
-                        <TableCell>{PLATFORM_LABELS[key] ?? key}</TableCell>
-                        <TableCell align="right">{tot.posts}</TableCell>
-                        <TableCell align="right">{tot.views.toLocaleString("es")}</TableCell>
-                        <TableCell align="right" sx={{ fontWeight: 600 }}>
-                          {formatMoney(tot.earnings, "USD")}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </Paper>
-            )}
-          </Grid>
-
-          <Grid size={{ xs: 12, md: 6 }}>
-            <Typography variant="h5" sx={{ mb: 2 }}>
-              Últimas publicaciones
-            </Typography>
-            {!stats || stats.recent_posts.length === 0 ? (
-              <Paper sx={{ p: 3, borderStyle: "dashed" }}>
-                <Typography variant="body2" color="text.secondary">
-                  Cuando registres publicaciones aparecerán aquí.
-                </Typography>
-              </Paper>
-            ) : (
-              <Stack spacing={2}>
-                {stats.recent_posts.map((post) => (
-                  <Paper key={post.post_id} sx={{ p: 2.5 }}>
-                    <Stack
-                      direction={{ xs: "column", md: "row" }}
-                      spacing={1.5}
-                      sx={{ justifyContent: "space-between", alignItems: { xs: "stretch", md: "center" } }}
-                    >
-                      <Box>
-                        <Typography variant="subtitle2">{post.title}</Typography>
-                        <Stack direction="row" spacing={1} sx={{ alignItems: "center", mt: 0.5 }}>
-                          <Typography variant="caption" color="text.secondary">
-                            {PLATFORM_LABELS[post.platform] ?? post.platform}
-                          </Typography>
-                          <Chip
-                            size="small"
-                            label={post.status === "publicado" ? "publicado" : "sin publicar"}
-                            color={post.status === "publicado" ? "primary" : "default"}
-                            variant={post.status === "publicado" ? "filled" : "outlined"}
-                          />
-                        </Stack>
-                      </Box>
-                      <Stack direction="row" spacing={2} sx={{ alignItems: "center", flexWrap: "wrap" }}>
-                        <Typography variant="body2" color="text.secondary">
-                          {post.views.toLocaleString("es")} vistas
-                        </Typography>
-                        <Typography variant="subtitle2">
-                          {formatMoney(post.earnings, post.currency)}
-                        </Typography>
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          onClick={() => void openJob(post.job_id, onOpenJob).catch(() => {})}
-                        >
-                          abrir clips
-                        </Button>
-                      </Stack>
-                    </Stack>
-                  </Paper>
-                ))}
-              </Stack>
-            )}
-          </Grid>
-        </Grid>
-
-        <Box sx={{ mt: 5, textAlign: "center" }}>
-          <Button variant="contained" onClick={onNewJob}>
-            Procesar un video nuevo
-          </Button>
+    <Container maxWidth="lg" sx={{ py: { xs: 4, md: 6 } }}>
+      <Stack
+        direction={{ xs: "column", md: "row" }}
+        spacing={2}
+        sx={{ justifyContent: "space-between", alignItems: { xs: "stretch", md: "flex-end" }, mb: 3 }}
+      >
+        <Box>
+          <Typography variant="overline" sx={{ display: "block" }}>
+            Panel de ganancias
+          </Typography>
+          <Typography variant="h4" sx={{ mt: 0.5 }}>
+            Tu rendimiento
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 1, maxWidth: "60ch" }}>
+            Registra manualmente cada publicación de tus clips y sigue el total por plataforma y por
+            video.
+          </Typography>
         </Box>
-      </Container>
-    </Box>
+        <Button variant="contained" onClick={onNewJob} sx={{ alignSelf: { md: "flex-end" } }}>
+          Procesar video nuevo
+        </Button>
+      </Stack>
+
+      {error && (
+        <Alert severity="error" sx={{ mb: 3 }}>
+          {error}
+        </Alert>
+      )}
+
+      <Grid container spacing={2.5}>
+        <Grid size={{ xs: 12, sm: 6, md: 4 }}>
+          <StatCard
+            label="Ganancia total"
+            value={formatMoney(totalByPlatform, "USD")}
+            caption="suma de todas las publicaciones"
+            highlight
+          />
+        </Grid>
+        <Grid size={{ xs: 6, sm: 4, md: 2 }}>
+          <StatCard label="Videos procesados" value={stats?.jobs ?? 0} />
+        </Grid>
+        <Grid size={{ xs: 6, sm: 4, md: 2 }}>
+          <StatCard label="Clips generados" value={stats?.clips ?? 0} />
+        </Grid>
+        <Grid size={{ xs: 6, sm: 4, md: 2 }}>
+          <StatCard
+            label="Publicaciones"
+            value={stats?.posts ?? 0}
+            caption={`${stats?.publicados ?? 0} publicadas · ${pending} pendientes`}
+          />
+        </Grid>
+        <Grid size={{ xs: 6, sm: 4, md: 2 }}>
+          <StatCard
+            label="Vistas totales"
+            value={(stats?.total_views ?? 0).toLocaleString("es")}
+          />
+        </Grid>
+        <Grid size={{ xs: 6, sm: 4, md: 3 }}>
+          <StatCard
+            label="Me gusta"
+            value={(stats?.total_likes ?? 0).toLocaleString("es")}
+          />
+        </Grid>
+        <Grid size={{ xs: 6, sm: 4, md: 3 }}>
+          <StatCard
+            label="Cuentas vinculadas"
+            value={accounts.length}
+            caption={
+              accounts.length === 0
+                ? "vincula tus cuentas en CUENTAS"
+                : accounts.map((a) => ACCOUNT_PLATFORM_LABELS[a.platform] ?? a.platform).join(" · ")
+            }
+          />
+        </Grid>
+      </Grid>
+
+      <Grid container spacing={4} sx={{ mt: 2 }}>
+        <Grid size={{ xs: 12, md: 6 }}>
+          <Typography variant="h6" sx={{ mb: 2 }}>
+            Por plataforma
+          </Typography>
+          {platforms.length === 0 ? (
+            <Box
+              sx={{
+                p: 4,
+                border: "1px dashed",
+                borderColor: "divider",
+                borderRadius: 2,
+                bgcolor: "background.paper",
+                textAlign: "center",
+              }}
+            >
+              <Typography variant="body2" color="text.secondary">
+                Todavía no hay publicaciones registradas.
+              </Typography>
+            </Box>
+          ) : (
+            <Paper sx={{ overflowX: "auto" }}>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Plataforma</TableCell>
+                    <TableCell align="right">Posts</TableCell>
+                    <TableCell align="right">Vistas</TableCell>
+                    <TableCell align="right">Me gusta</TableCell>
+                    <TableCell align="right">Ganancias</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {platforms.map(([key, tot]) => (
+                    <TableRow key={key}>
+                      <TableCell sx={{ fontWeight: 600 }}>{PLATFORM_LABELS[key] ?? key}</TableCell>
+                      <TableCell align="right">{tot.posts}</TableCell>
+                      <TableCell align="right" sx={{ fontFamily: "'Fragment Mono', monospace", fontSize: "0.78rem" }}>
+                        {tot.views.toLocaleString("es")}
+                      </TableCell>
+                      <TableCell align="right" sx={{ fontFamily: "'Fragment Mono', monospace", fontSize: "0.78rem" }}>
+                        {tot.likes.toLocaleString("es")}
+                      </TableCell>
+                      <TableCell align="right" sx={{ fontWeight: 600 }}>
+                        {formatMoney(tot.earnings, "USD")}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </Paper>
+          )}
+        </Grid>
+
+        <Grid size={{ xs: 12, md: 6 }}>
+          <Typography variant="h6" sx={{ mb: 2 }}>
+            Últimas publicaciones
+          </Typography>
+          {!stats || stats.recent_posts.length === 0 ? (
+            <Box
+              sx={{
+                p: 4,
+                border: "1px dashed",
+                borderColor: "divider",
+                borderRadius: 2,
+                bgcolor: "background.paper",
+                textAlign: "center",
+              }}
+            >
+              <Typography variant="body2" color="text.secondary">
+                Cuando registres publicaciones aparecerán aquí.
+              </Typography>
+            </Box>
+          ) : (
+            <Stack spacing={2}>
+              {stats.recent_posts.map((post) => (
+                <Paper key={post.post_id} sx={{ p: 2 }}>
+                  <Stack
+                    direction={{ xs: "column", md: "row" }}
+                    spacing={1.5}
+                    sx={{ justifyContent: "space-between", alignItems: { xs: "stretch", md: "center" } }}
+                  >
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography
+                        variant="subtitle2"
+                        sx={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
+                      >
+                        {post.title}
+                      </Typography>
+                      <Stack direction="row" spacing={1} sx={{ alignItems: "center", mt: 0.5, flexWrap: "wrap" }}>
+                        <Typography variant="caption" color="text.secondary">
+                          {PLATFORM_LABELS[post.platform] ?? post.platform}
+                        </Typography>
+                        <Chip
+                          size="small"
+                          label={post.status === "publicado" ? "publicado" : "sin publicar"}
+                          color={post.status === "publicado" ? "primary" : "default"}
+                          variant={post.status === "publicado" ? "filled" : "outlined"}
+                        />
+                      </Stack>
+                    </Box>
+                    <Stack direction="row" spacing={2} sx={{ alignItems: "center", flexWrap: "wrap" }}>
+                      <Typography
+                        variant="body2"
+                        color="text.secondary"
+                        sx={{ fontFamily: "'Fragment Mono', monospace", fontSize: "0.74rem" }}
+                      >
+                        {post.views.toLocaleString("es")} vistas
+                      </Typography>
+                      <Typography variant="subtitle2">{formatMoney(post.earnings, post.currency)}</Typography>
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        onClick={() => void openJob(post.job_id, onOpenJob).catch(() => {})}
+                      >
+                        abrir clips
+                      </Button>
+                    </Stack>
+                  </Stack>
+                </Paper>
+              ))}
+            </Stack>
+          )}
+        </Grid>
+      </Grid>
+
+      <Box sx={{ mt: 5, display: "flex", gap: 1.5, alignItems: "center" }}>
+        <Box aria-hidden sx={{ flex: 1, height: 8, borderRadius: 2, background: `repeating-linear-gradient(90deg, transparent 0 6px, ${EDGE} 6px 8px, transparent 8px 14px)`, opacity: 0.5 }} />
+        <Typography variant="caption" color="text.secondary" sx={{ fontFamily: "'Fragment Mono', monospace", fontSize: "0.6rem", letterSpacing: "0.1em" }}>
+          EDGETAPE · RENDIMIENTO
+        </Typography>
+        <Box aria-hidden sx={{ flex: 1, height: 8, borderRadius: 2, background: `repeating-linear-gradient(90deg, transparent 0 6px, ${EDGE} 6px 8px, transparent 8px 14px)`, opacity: 0.5 }} />
+      </Box>
+    </Container>
   );
 }
