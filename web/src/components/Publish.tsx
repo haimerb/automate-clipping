@@ -204,7 +204,7 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
           sx={{ justifyContent: "space-between", alignItems: { xs: "stretch", md: "flex-end" } }}
         >
           <Box>
-            <Typography variant="overline">Sección 03 — lo que vas a publicar</Typography>
+            <Typography variant="overline">Lo que vas a publicar</Typography>
             <Typography variant="h4" sx={{ mt: 0.5 }}>
               {selected.length} {selected.length === 1 ? "clip listo" : "clips listos"}
             </Typography>

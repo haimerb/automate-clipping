@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import type { DragEvent, FormEvent } from "react";
 import {
   Alert,
@@ -7,11 +7,13 @@ import {
   Chip,
   Container,
   LinearProgress,
-  List,
-  ListItemButton,
-  ListItemText,
   Stack,
   Tab,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableRow,
   Tabs,
   TextField,
   Typography,
@@ -20,7 +22,7 @@ import UploadFileRoundedIcon from "@mui/icons-material/UploadFileRounded";
 import LinkRoundedIcon from "@mui/icons-material/LinkRounded";
 import { uploadFile, createYoutubeJob, pollJob, listJobs, formatDuration } from "../api";
 import type { Job } from "../api";
-import { MARK } from "../theme";
+import { EDGE, MARK } from "../theme";
 
 interface Props {
   onReady: (job: Job) => void;
@@ -28,6 +30,14 @@ interface Props {
 }
 
 type Source = "file" | "youtube";
+
+const STATUS_LABEL: Record<string, string> = {
+  queued: "En cola",
+  downloading: "Descargando",
+  processing: "Procesando",
+  done: "Listo",
+  failed: "Falló",
+};
 
 export default function Upload({ onReady, onOpenJob }: Props) {
   const [source, setSource] = useState<Source>("file");
@@ -88,39 +98,21 @@ export default function Upload({ onReady, onOpenJob }: Props) {
     : "Procesando…";
 
   return (
-    <Container maxWidth="lg" sx={{ py: { xs: 5, md: 9 } }}>
-      <Typography variant="overline" sx={{ display: "block" }}>
-        edgetape — clipping automático
-      </Typography>
-      <Typography variant="h3" sx={{ mt: 1, maxWidth: "20ch" }}>
-        Una grabación. Un carrete con los <em>momentos</em> que importan.
-      </Typography>
-      <Typography variant="body1" color="text.secondary" sx={{ mt: 1.5, maxWidth: "62ch" }}>
-        Edgetape escanea tu audio o video, <b>detecta los pasajes más fuertes</b> y los deja
-        listos en un carrete de repaso — cada uno para cortar y exportar como clip para Shorts,
-        TikTok y Reels.
-      </Typography>
+    <Container maxWidth="lg" sx={{ py: { xs: 4, md: 6 } }}>
+      <Box sx={{ mb: 3 }}>
+        <Typography variant="overline" sx={{ display: "block" }}>
+          Nueva producción
+        </Typography>
+        <Typography variant="h4" sx={{ mt: 0.5 }}>
+          Procesar una grabación
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mt: 1, maxWidth: "62ch" }}>
+          Sube un archivo o pega una URL de YouTube. Edgetape escanea, detecta los pasajes más
+          fuertes y deja los clips listos para revisar.
+        </Typography>
+      </Box>
 
-      <Stack direction="row" spacing={2} sx={{ mt: 3, alignItems: "center", flexWrap: "wrap" }}>
-        {["INGEST", "DETECT", "CUT", "POST"].map((stage, i) => (
-          <Fragment key={stage}>
-            {i > 0 && <Box aria-hidden sx={{ width: 22, height: 1, bgcolor: "divider" }} />}
-            <Typography
-              sx={{
-                fontFamily: "'Fragment Mono', monospace",
-                fontSize: "0.6rem",
-                letterSpacing: "0.18em",
-                color: i === 0 ? MARK : "text.secondary",
-                textTransform: "uppercase",
-              }}
-            >
-              {stage}
-            </Typography>
-          </Fragment>
-        ))}
-      </Stack>
-
-      <Box sx={{ mt: 5 }}>
+      <Box>
         <Tabs
           value={source}
           onChange={(_, v) => setSource(v as Source)}
@@ -152,15 +144,14 @@ export default function Upload({ onReady, onOpenJob }: Props) {
             onDrop={onDrop}
             onClick={() => document.getElementById("file-input")?.click()}
             sx={{
-              border: `2px dashed ${dragging ? "#1E3A8A" : "divider"}`,
-              borderColor: dragging ? "#1E3A8A" : "divider",
+              border: `2px dashed ${dragging ? EDGE : "divider"}`,
               background: dragging ? "rgba(30,58,138,0.06)" : "background.paper",
-              borderRadius: 1,
+              borderRadius: 2,
               p: { xs: 4, md: 7 },
               textAlign: "center",
               cursor: "pointer",
               transition: "border-color .2s ease, background .2s ease",
-              "&:hover": { borderColor: "#1E3A8A" },
+              "&:hover": { borderColor: EDGE },
             }}
           >
             <input
@@ -189,7 +180,11 @@ export default function Upload({ onReady, onOpenJob }: Props) {
             {showProgress && (
               <Box sx={{ mt: 3 }}>
                 <LinearProgress variant="determinate" value={job.progress} sx={{ height: 6 }} />
-                <Typography variant="caption" color="text.secondary" sx={{ fontFamily: "'Fragment Mono', monospace", mt: 0.5, display: "block" }}>
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ fontFamily: "'Fragment Mono', monospace", mt: 0.5, display: "block" }}
+                >
                   {job.progress}%
                 </Typography>
               </Box>
@@ -198,7 +193,7 @@ export default function Upload({ onReady, onOpenJob }: Props) {
         ) : (
           <Box component="form" onSubmit={onSubmit} sx={{ maxWidth: 640 }}>
             <Typography variant="overline" color="text.secondary" sx={{ display: "block" }}>
-              ENLACE
+              Enlace
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 2 }}>
               Pega una URL de YouTube y edgetape descarga el video automáticamente.
@@ -211,14 +206,23 @@ export default function Upload({ onReady, onOpenJob }: Props) {
                 onChange={(e) => setUrl(e.target.value)}
                 disabled={busy}
               />
-              <Button variant="contained" type="submit" disabled={busy || !url.trim()} sx={{ minWidth: 180 }}>
+              <Button
+                variant="contained"
+                type="submit"
+                disabled={busy || !url.trim()}
+                sx={{ minWidth: 180 }}
+              >
                 {busy ? statusLabel : "Procesar video"}
               </Button>
             </Stack>
             {showProgress && (
               <Box sx={{ mt: 3 }}>
                 <LinearProgress variant="determinate" value={job.progress} sx={{ height: 6 }} />
-                <Typography variant="caption" color="text.secondary" sx={{ fontFamily: "'Fragment Mono', monospace", mt: 0.5, display: "block" }}>
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ fontFamily: "'Fragment Mono', monospace", mt: 0.5, display: "block" }}
+                >
                   {job.progress}%
                 </Typography>
               </Box>
@@ -231,89 +235,95 @@ export default function Upload({ onReady, onOpenJob }: Props) {
             {error}
           </Alert>
         )}
+      </Box>
 
-        <Box
-          aria-hidden
-          sx={{
-            mt: 6,
-            height: 44,
-            borderRadius: 1,
-            border: "1px solid",
-            borderColor: "divider",
-            background: `repeating-linear-gradient(90deg, transparent 0 40px, ${MARK} 40px 44px, transparent 44px 48px)`,
-            opacity: 0.35,
-          }}
-        />
-
-        {recent.length > 0 && (
-          <Box sx={{ mt: 5 }}>
+      <Box sx={{ mt: 6 }}>
+        <Stack direction="row" spacing={2} sx={{ alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", mb: 2 }}>
+          <Box>
             <Typography variant="overline" sx={{ display: "block" }}>
-              TUS GRABACIONES
+              Tu material
             </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 2 }}>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
               Retoma un video ya procesado para revisar sus clips y publicaciones.
             </Typography>
-            <List disablePadding sx={{ border: "1px solid", borderColor: "divider", borderRadius: 1 }}>
-              {recent.slice(0, 8).map((j) => {
-                const ready = j.status === "done";
-                const statusLabel: Record<string, string> = {
-                  queued: "En cola",
-                  downloading: "Descargando",
-                  processing: "Procesando",
-                  done: "Listo",
-                  failed: "Falló",
-                };
-                return (
-                  <ListItemButton
-                    key={j.id}
-                    disabled={!ready}
-                    onClick={() => onOpenJob(j.id)}
-                    sx={{
-                      borderBottom: "1px dashed",
-                      borderColor: "divider",
-                      "&:last-of-type": { borderBottom: "none" },
-                      "&:hover": { background: "rgba(30,58,138,0.05)" },
-                    }}
-                  >
-                    <ListItemText
-                      primary={j.filename}
-                      secondary={
-                        <>
-                          {new Date(j.created_at).toLocaleDateString("es-AR", {
-                            day: "2-digit",
-                            month: "short",
-                            year: "numeric",
-                          })}{" "}
-                          · {new Date(j.created_at).toLocaleTimeString("es-AR", {
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })}{" "}
-                          · {j.clip_count} clips
-                          {j.duration ? ` · ${formatDuration(j.duration)}` : ""}
-                          {j.source === "youtube" ? " · YouTube" : " · archivo"}
-                        </>
-                      }
-                      slotProps={{
-                        primary: { sx: { fontWeight: 600, fontSize: "0.9rem" } },
-                        secondary: { variant: "body2" },
-                      }}
-                    />
-                    <Chip
-                      size="small"
-                      label={statusLabel[j.status] ?? j.status}
-                      variant={ready ? "filled" : "outlined"}
-                      sx={{
-                        ml: 2,
-                        bgcolor: ready ? MARK : "transparent",
-                        color: ready ? "#14161A" : undefined,
-                        borderColor: ready ? MARK : undefined,
-                        flexShrink: 0,
-                      }}
-                    />
-                  </ListItemButton>
-                );
-              })}
-            </List>
+          </Box>
+        </Stack>
+
+        {recent.length === 0 ? (
+          <Box
+            sx={{
+              p: 5,
+              textAlign: "center",
+              border: "1px dashed",
+              borderColor: "divider",
+              borderRadius: 2,
+              bgcolor: "background.paper",
+            }}
+          >
+            <Typography variant="body2" color="text.secondary">
+              Todavía no procesaste ninguna grabación. Cuando lo hagas, aparecerá aquí.
+            </Typography>
+          </Box>
+        ) : (
+          <Box sx={{ border: "1px solid", borderColor: "divider", borderRadius: 2, overflow: "hidden", bgcolor: "background.paper" }}>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Video</TableCell>
+                  <TableCell>Fuente</TableCell>
+                  <TableCell align="right">Clips</TableCell>
+                  <TableCell align="right">Duración</TableCell>
+                  <TableCell>Fecha</TableCell>
+                  <TableCell align="right">Estado</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {recent.slice(0, 10).map((j) => {
+                  const ready = j.status === "done";
+                  return (
+                    <TableRow
+                      key={j.id}
+                      hover
+                      onClick={() => ready && onOpenJob(j.id)}
+                      sx={{ cursor: ready ? "pointer" : "default" }}
+                    >
+                      <TableCell sx={{ fontWeight: 600 }}>{j.filename}</TableCell>
+                      <TableCell>{j.source === "youtube" ? "YouTube" : "archivo"}</TableCell>
+                      <TableCell align="right" sx={{ fontFamily: "'Fragment Mono', monospace", fontSize: "0.78rem" }}>
+                        {j.clip_count}
+                      </TableCell>
+                      <TableCell align="right" sx={{ fontFamily: "'Fragment Mono', monospace", fontSize: "0.78rem" }}>
+                        {j.duration ? formatDuration(j.duration) : "—"}
+                      </TableCell>
+                      <TableCell sx={{ whiteSpace: "nowrap" }}>
+                        {new Date(j.created_at).toLocaleDateString("es-AR", {
+                          day: "2-digit",
+                          month: "short",
+                          year: "numeric",
+                        })}
+                        {" · "}
+                        {new Date(j.created_at).toLocaleTimeString("es-AR", {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </TableCell>
+                      <TableCell align="right">
+                        <Chip
+                          size="small"
+                          label={STATUS_LABEL[j.status] ?? j.status}
+                          variant={ready ? "filled" : "outlined"}
+                          sx={{
+                            bgcolor: ready ? MARK : "transparent",
+                            color: ready ? "#14161A" : undefined,
+                            borderColor: ready ? MARK : undefined,
+                          }}
+                        />
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
           </Box>
         )}
       </Box>
