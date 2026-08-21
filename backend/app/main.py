@@ -290,7 +290,13 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
         }
         import json
         (job_dir / "generate_meta.json").write_text(json.dumps(meta, ensure_ascii=False))
-        enqueue_job(job.id, str(store.root))
+        import os as _os
+        if _os.environ.get("EDGETAPE_ASYNC_BACKEND") == "celery":
+            enqueue_job(job.id, str(store.root))
+        else:
+            from .processing import run_job as _run
+            import asyncio as _aio
+            await _run(job.id, store, tsc, sel)
         return {"job_id": job.id, "status": "queued"}
 
     # ── publicación real en YouTube ──────────────────

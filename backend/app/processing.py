@@ -110,6 +110,23 @@ async def run_job(job_id: str, store: JobStore, transcriber, selector=None) -> N
                 )
             ]
             store.save_clips(job_id, clips)
+
+            job.progress = 85
+            store.save_job(job)
+            for clip in clips:
+                try:
+                    exports = store.exports_dir(job.id)
+                    exports.mkdir(parents=True, exist_ok=True)
+                    safe = re.sub(r"[^\w.\-]", "_", clip.title).strip("_")[:40] or "clip"
+                    out = exports / f"{clip.id}_{safe}.mp4"
+                    mode = os.environ.get("EDGETAPE_EXPORT_MODE", "vertical_blur")
+                    await asyncio.to_thread(
+                        cut_clip, source, clip.start, clip.end, out, mode
+                    )
+                    store.update_clip(job.id, clip.id, exported=True, export_name=out.name)
+                except Exception:
+                    pass
+
             job.transcriber = "ai_generate"
             job.scorer = "ai_generate"
             job.clip_count = len(clips)
