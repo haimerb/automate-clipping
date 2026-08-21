@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import {
   Box,
   Button,
+  Divider,
   Drawer,
   IconButton,
   List,
@@ -20,17 +21,19 @@ import MovieFilterRoundedIcon from "@mui/icons-material/MovieFilterRounded";
 import SendRoundedIcon from "@mui/icons-material/SendRounded";
 import AccountBoxRoundedIcon from "@mui/icons-material/AccountBoxRounded";
 import PaidRoundedIcon from "@mui/icons-material/PaidRounded";
+import AutoAwesomeRoundedIcon from "@mui/icons-material/AutoAwesomeRounded";
 import Upload from "./components/Upload";
 import Reel from "./components/Reel";
 import Dashboard from "./components/Dashboard";
 import Accounts from "./components/Accounts";
 import Publish from "./components/Publish";
+import Generate from "./components/Generate";
 import Auth from "./components/Auth";
 import { getClips, getJob, getMe, getToken, setToken } from "./api";
 import type { Clip, Job, User } from "./api";
-import { CARD, EDGE, MARK, SIDEBAR_WIDTH } from "./theme";
+import { CARD, INK, MARK, SIDEBAR_WIDTH } from "./theme";
 
-type Phase = "upload" | "reel" | "publish" | "accounts" | "dashboard";
+type Phase = "upload" | "reel" | "publish" | "generate" | "accounts" | "dashboard";
 
 interface NavItem {
   label: string;
@@ -39,6 +42,7 @@ interface NavItem {
   icon: ReactNode;
   needsJob?: boolean;
   needsSelection?: boolean;
+  dividerBefore?: boolean;
 }
 
 const NAV: NavItem[] = [
@@ -64,6 +68,13 @@ const NAV: NavItem[] = [
     needsSelection: true,
   },
   {
+    label: "Generar",
+    caption: "crear video con IA",
+    phase: "generate",
+    icon: <AutoAwesomeRoundedIcon fontSize="small" />,
+    dividerBefore: true,
+  },
+  {
     label: "Cuentas",
     caption: "canales vinculados",
     phase: "accounts",
@@ -79,11 +90,57 @@ const NAV: NavItem[] = [
 
 function Brand() {
   return (
-    <Typography
-      sx={{ fontFamily: "'Fragment Mono', monospace", fontSize: "1.05rem", letterSpacing: "0.02em" }}
-    >
-      edgetape<span style={{ color: EDGE }}>.</span>
-    </Typography>
+    <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+      <Box
+        sx={{
+          width: 32,
+          height: 32,
+          borderRadius: 1.5,
+          background: `linear-gradient(135deg, ${MARK} 0%, #F59E0B 100%)`,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          boxShadow: "0 2px 8px rgba(255,198,71,0.3)",
+        }}
+      >
+        <Typography
+          sx={{
+            fontFamily: "'Fragment Mono', monospace",
+            fontSize: "0.9rem",
+            fontWeight: 700,
+            color: INK,
+            lineHeight: 1,
+          }}
+        >
+          e
+        </Typography>
+      </Box>
+      <Box>
+        <Typography
+          sx={{
+            fontFamily: "'Fragment Mono', monospace",
+            fontSize: "1rem",
+            fontWeight: 600,
+            color: "#fff",
+            letterSpacing: "0.02em",
+            lineHeight: 1.2,
+          }}
+        >
+          edgetape
+        </Typography>
+        <Typography
+          sx={{
+            fontFamily: "'Fragment Mono', monospace",
+            fontSize: "0.52rem",
+            color: "rgba(255,255,255,0.35)",
+            letterSpacing: "0.1em",
+            textTransform: "uppercase",
+          }}
+        >
+          panel de control
+        </Typography>
+      </Box>
+    </Box>
   );
 }
 
@@ -100,80 +157,135 @@ interface SidebarProps {
 function SidebarContent({ nav, active, badge, disabled, onNavigate, onLogout, user }: SidebarProps) {
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      <Toolbar sx={{ px: 2.5, gap: 1, minHeight: 64 }}>
+      <Toolbar sx={{ px: 2.5, gap: 1, minHeight: 72 }}>
         <Brand />
       </Toolbar>
-      <List sx={{ px: 1.5, flex: 1 }}>
+      <Divider sx={{ borderColor: "rgba(255,255,255,0.08)", mx: 2 }} />
+      <List sx={{ px: 1.5, py: 1, flex: 1 }}>
         {nav.map((item) => {
           const disabledHere = disabled[item.phase] === true;
           const count = badge[item.phase];
           return (
-            <ListItemButton
-              key={item.phase}
-              selected={active === item.phase}
-              disabled={disabledHere}
-              onClick={() => onNavigate(item.phase)}
-              sx={{ mb: 0.5, py: 1.1, px: 1.5 }}
-            >
-              <ListItemIcon sx={{ minWidth: 34, color: active === item.phase ? EDGE : "text.secondary" }}>
-                {item.icon}
-              </ListItemIcon>
-              <ListItemText
-                primary={item.label}
-                secondary={item.caption}
-                slotProps={{
-                  primary: {
-                    sx: {
-                      fontWeight: 600,
-                      fontSize: "0.9rem",
-                      lineHeight: 1.25,
-                      color: disabledHere ? "text.disabled" : "text.primary",
-                    },
-                  },
-                  secondary: { sx: { fontSize: "0.68rem", color: "text.secondary", lineHeight: 1.3 } },
-                }}
-              />
-              {count !== undefined && count > 0 && (
-                <Box
+            <Box key={item.phase}>
+              {item.dividerBefore && (
+                <Divider sx={{ borderColor: "rgba(255,255,255,0.08)", my: 1, mx: 1 }} />
+              )}
+              <ListItemButton
+                selected={active === item.phase}
+                disabled={disabledHere}
+                onClick={() => onNavigate(item.phase)}
+                sx={{ mb: 0.3, py: 1, px: 1.5 }}
+              >
+                <ListItemIcon
                   sx={{
-                    minWidth: 20,
-                    height: 20,
-                    px: 0.5,
-                    borderRadius: 1,
-                    background: MARK,
-                    color: "#14161A",
-                    fontFamily: "'Fragment Mono', monospace",
-                    fontSize: "0.62rem",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
+                    minWidth: 32,
+                    color: active === item.phase ? MARK : "rgba(255,255,255,0.5)",
                   }}
                 >
-                  {count}
-                </Box>
-              )}
-            </ListItemButton>
+                  {item.icon}
+                </ListItemIcon>
+                <ListItemText
+                  primary={item.label}
+                  secondary={item.caption}
+                  slotProps={{
+                    primary: {
+                      sx: {
+                        fontWeight: active === item.phase ? 700 : 500,
+                        fontSize: "0.85rem",
+                        lineHeight: 1.3,
+                        color: disabledHere
+                          ? "rgba(255,255,255,0.2)"
+                          : active === item.phase
+                          ? "#fff"
+                          : "rgba(255,255,255,0.75)",
+                      },
+                    },
+                    secondary: {
+                      sx: {
+                        fontSize: "0.62rem",
+                        color: "rgba(255,255,255,0.3)",
+                        lineHeight: 1.3,
+                      },
+                    },
+                  }}
+                />
+                {count !== undefined && count > 0 && (
+                  <Box
+                    sx={{
+                      minWidth: 20,
+                      height: 20,
+                      px: 0.5,
+                      borderRadius: 1,
+                      background: active === item.phase ? MARK : "rgba(255,255,255,0.12)",
+                      color: active === item.phase ? INK : "rgba(255,255,255,0.7)",
+                      fontFamily: "'Fragment Mono', monospace",
+                      fontSize: "0.6rem",
+                      fontWeight: 600,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
+                  >
+                    {count}
+                  </Box>
+                )}
+              </ListItemButton>
+            </Box>
           );
         })}
       </List>
-      <Box sx={{ borderTop: "1px solid", borderColor: "divider", px: 2, py: 1.5 }}>
-        <Stack direction="row" spacing={1.5} sx={{ alignItems: "center", justifyContent: "space-between" }}>
-          <Box sx={{ minWidth: 0 }}>
+      <Divider sx={{ borderColor: "rgba(255,255,255,0.08)", mx: 2 }} />
+      <Box sx={{ px: 2, py: 2 }}>
+        <Stack direction="row" spacing={1.5} sx={{ alignItems: "center" }}>
+          <Box
+            sx={{
+              width: 34,
+              height: 34,
+              borderRadius: "50%",
+              background: "rgba(255,198,71,0.15)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              flexShrink: 0,
+            }}
+          >
+            <Typography sx={{ fontWeight: 700, fontSize: "0.8rem", color: MARK }}>
+              {user.name.charAt(0).toUpperCase()}
+            </Typography>
+          </Box>
+          <Box sx={{ minWidth: 0, flex: 1 }}>
             <Typography
               variant="body2"
-              sx={{ fontWeight: 600, fontSize: "0.82rem", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
+              sx={{
+                fontWeight: 600,
+                fontSize: "0.78rem",
+                color: "rgba(255,255,255,0.9)",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
             >
               {user.name}
             </Typography>
             <Typography
-              variant="caption"
-              color="text.secondary"
-              sx={{ fontFamily: "'Fragment Mono', monospace", fontSize: "0.6rem" }}
+              sx={{
+                fontFamily: "'Fragment Mono', monospace",
+                fontSize: "0.56rem",
+                color: "rgba(255,255,255,0.35)",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
             >
               {user.email}
             </Typography>
           </Box>
-          <IconButton size="small" onClick={onLogout} aria-label="salir">
+          <IconButton
+            size="small"
+            onClick={onLogout}
+            aria-label="salir"
+            sx={{ color: "rgba(255,255,255,0.35)", "&:hover": { color: "#fff", backgroundColor: "rgba(255,255,255,0.08)" } }}
+          >
             <LogoutRoundedIcon fontSize="small" />
           </IconButton>
         </Stack>
@@ -310,9 +422,10 @@ export default function App() {
             background: CARD,
             borderBottom: "1px solid",
             borderColor: "divider",
+            boxShadow: "0 1px 3px rgba(20,22,26,.04)",
           }}
         >
-          <Toolbar sx={{ gap: 2, px: { xs: 2, md: 3 }, minHeight: 64 }}>
+          <Toolbar sx={{ gap: 2, px: { xs: 2, md: 3 }, minHeight: 60 }}>
             <IconButton
               edge="start"
               aria-label="abrir menú"
@@ -322,7 +435,7 @@ export default function App() {
               <MenuRoundedIcon />
             </IconButton>
             <Box sx={{ minWidth: 0 }}>
-              <Typography variant="overline" sx={{ display: "block", fontSize: "0.6rem" }}>
+              <Typography variant="overline" sx={{ display: "block", fontSize: "0.58rem" }}>
                 Edgetape — panel de trabajo
               </Typography>
               <Typography variant="h6" sx={{ lineHeight: 1.15, fontSize: "1.05rem" }}>
@@ -344,11 +457,15 @@ export default function App() {
                   color="text.secondary"
                   sx={{
                     fontFamily: "'Fragment Mono', monospace",
-                    fontSize: "0.64rem",
+                    fontSize: "0.62rem",
                     whiteSpace: "nowrap",
                     overflow: "hidden",
                     textOverflow: "ellipsis",
                     maxWidth: { xs: 120, sm: 220 },
+                    px: 1,
+                    py: 0.5,
+                    borderRadius: 1,
+                    backgroundColor: "rgba(30,58,138,0.06)",
                   }}
                 >
                   {job.filename}
@@ -358,11 +475,20 @@ export default function App() {
             <Box sx={{ ml: job ? 1 : "auto", display: { xs: "none", sm: "flex" }, alignItems: "center", gap: 1.5 }}>
               <Typography
                 variant="body2"
-                sx={{ fontFamily: "'Fragment Mono', monospace", fontSize: "0.72rem" }}
+                sx={{ fontFamily: "'Fragment Mono', monospace", fontSize: "0.7rem", color: "text.secondary" }}
               >
                 {user.name}
               </Typography>
-              <Button variant="outlined" size="small" onClick={logout} sx={{ borderColor: "divider" }}>
+              <Button
+                variant="outlined"
+                size="small"
+                onClick={logout}
+                sx={{
+                  borderColor: "divider",
+                  color: "text.secondary",
+                  "&:hover": { borderColor: "error.main", color: "error.main", backgroundColor: "rgba(196,61,61,.04)" },
+                }}
+              >
                 salir
               </Button>
             </Box>
@@ -390,6 +516,12 @@ export default function App() {
               onJobChange={setJob}
             />
           )}
+          {phase === "generate" && (
+            <Generate
+              onJobReady={(j) => void handleReady(j)}
+              onOpenJob={openJob}
+            />
+          )}
           {phase === "accounts" && <Accounts />}
           {phase === "dashboard" && (
             <Dashboard onNewJob={() => goTo("upload")} onOpenJob={(j) => void openJob(j.id)} />
@@ -407,10 +539,10 @@ export default function App() {
           }}
         >
           <Stack direction="row" spacing={2} sx={{ alignItems: "center", flexWrap: "wrap" }}>
-            <Typography sx={{ fontFamily: "'Fragment Mono', monospace", fontSize: "0.7rem" }}>
-              edgetape<span style={{ color: EDGE }}>.</span>
+            <Typography sx={{ fontFamily: "'Fragment Mono', monospace", fontSize: "0.68rem" }}>
+              edgetape<span style={{ color: MARK }}>.</span>
             </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ ml: "auto" }}>
+            <Typography variant="body2" color="text.secondary" sx={{ ml: "auto", fontSize: "0.72rem" }}>
               Grabaciones largas → los momentos que importan.
             </Typography>
           </Stack>
