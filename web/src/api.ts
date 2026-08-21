@@ -2,7 +2,7 @@ export interface Job {
   id: string;
   filename: string;
   owner_id: string | null;
-  source: "upload" | "youtube";
+  source: "upload" | "youtube" | "generate";
   source_url: string | null;
   status: "queued" | "downloading" | "processing" | "done" | "failed";
   progress: number;
@@ -232,6 +232,24 @@ export function createYoutubeJob(url: string): Promise<Job> {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ url }),
+  });
+}
+
+export interface GenerateInput {
+  prompt: string;
+  duration: number;
+  style: string;
+  platform: string;
+  voice: string;
+  auto_publish: boolean;
+  account_id?: string;
+}
+
+export function generateVideo(input: GenerateInput): Promise<{ job_id: string; status: string }> {
+  return request<{ job_id: string; status: string }>("/api/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
   });
 }
 

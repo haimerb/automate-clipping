@@ -22,6 +22,7 @@ from .models import (
     Clip,
     ClipPublish,
     DashboardStats,
+    GenerateRequest,
     Job,
     JobSettings,
     LinkedAccountCreate,
@@ -259,6 +260,38 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
             raise HTTPException(status_code=404, detail="cuenta no encontrada")
         db.delete(account)
         db.commit()
+
+    # ── generación con IA ─────────────────────────────
+
+    @app.post("/api/generate", status_code=202)
+    async def generate_video(
+        body: GenerateRequest, user: User = Depends(get_current_user)
+    ) -> dict:
+        if not body.prompt.strip():
+            raise HTTPException(status_code=422, detail="El prompt no puede estar vacío")
+        if body.duration not in [15, 30, 60]:
+            raise HTTPException(status_code=422, detail="Duración debe ser 15, 30 o 60 segundos")
+        job = store.create_job(
+            f"IA: {body.prompt[:50]}",
+            source="generate",
+            source_url=None,
+            owner_id=user.id,
+        )
+        job_dir = store.job_dir(job.id)
+        job_dir.mkdir(parents=True, exist_ok=True)
+        meta = {
+            "prompt": body.prompt,
+            "duration": body.duration,
+            "style": body.style,
+            "platform": body.platform,
+            "voice": body.voice,
+            "auto_publish": body.auto_publish,
+            "account_id": body.account_id,
+        }
+        import json
+        (job_dir / "generate_meta.json").write_text(json.dumps(meta, ensure_ascii=False))
+        enqueue_job(job.id, str(store.root))
+        return {"job_id": job.id, "status": "queued"}
 
     # ── publicación real en YouTube ──────────────────
 

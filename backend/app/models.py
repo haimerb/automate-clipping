@@ -169,3 +169,13 @@ class PostCreate(BaseModel):
     currency: str = "USD"
     account: str | None = None
     method: str = "manual"
+
+
+class GenerateRequest(BaseModel):
+    prompt: str
+    duration: int = 30
+    style: str = "professional"
+    platform: str = "youtube_shorts"
+    voice: str = "es_mx_female"
+    auto_publish: bool = False
+    account_id: str | None = None
