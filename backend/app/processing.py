@@ -26,14 +26,15 @@ def _create_mock_video(duration: float, output_path: Path) -> None:
         cmd = [
             "ffmpeg", "-y",
             "-f", "lavfi",
-            "-i", f"color=c=#1a1a2e:s=1080x1920:d={duration}",
+            "-i", f"color=c=#1a1a2e:s=1080x1920:d={duration}:r=24",
             "-f", "lavfi",
             "-i", f"sine=frequency=440:duration={duration}",
             "-c:v", "libx264",
             "-preset", "ultrafast",
-            "-tune", "stillimage",
+            "-pix_fmt", "yuv420p",
             "-c:a", "aac",
             "-shortest",
+            "-f", "mp4",
             str(output_path),
         ]
         subprocess.run(cmd, capture_output=True, timeout=30, check=True)
