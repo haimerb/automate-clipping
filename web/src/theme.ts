@@ -2,14 +2,17 @@ import { createTheme } from "@mui/material/styles";
 
 export const EDGE = "#1E3A8A";
 export const EDGE_SOFT = "rgba(30,58,138,0.06)";
+export const EDGE_DARK = "#162D6B";
 export const MARK = "#FFC647";
-export const SURFACE = "#F1F3F5";
-export const SURFACE_2 = "#E9EDF1";
+export const MARK_SOFT = "rgba(255,198,71,0.12)";
+export const SURFACE = "#F4F5F7";
+export const SURFACE_2 = "#E8EBF0";
 export const CARD = "#FFFFFF";
 export const INK = "#14161A";
 export const MUTED = "#69707C";
 export const RAIL = "#D6DBE2";
-export const SIDEBAR_WIDTH = 244;
+export const SIDEBAR_BG = "#0F172A";
+export const SIDEBAR_WIDTH = 256;
 const MONO = '"Fragment Mono", ui-monospace, monospace';
 const SANS = '"Hanken Grotesk", system-ui, sans-serif';
 
@@ -24,19 +27,19 @@ export const theme = createTheme({
     error: { main: "#C43D3D" },
     success: { main: "#1E7A46" },
   },
-  shape: { borderRadius: 3 },
+  shape: { borderRadius: 4 },
   typography: {
     fontFamily: SANS,
     button: {
       fontFamily: MONO,
-      fontSize: "0.7rem",
-      fontWeight: 400,
+      fontSize: "0.68rem",
+      fontWeight: 500,
       letterSpacing: "0.08em",
       textTransform: "uppercase",
     },
     overline: {
       fontFamily: MONO,
-      fontSize: "0.64rem",
+      fontSize: "0.62rem",
       fontWeight: 400,
       letterSpacing: "0.14em",
       textTransform: "uppercase",
@@ -45,18 +48,18 @@ export const theme = createTheme({
     h3: { fontWeight: 700, letterSpacing: "-0.02em", lineHeight: 1.1 },
     h4: { fontWeight: 700, letterSpacing: "-0.02em" },
     h5: { fontWeight: 700, letterSpacing: "-0.01em" },
-    h6: { fontWeight: 600 },
+    h6: { fontWeight: 600, letterSpacing: "-0.01em" },
   },
   components: {
     MuiCssBaseline: {
       styleOverrides: {
         body: { WebkitFontSmoothing: "antialiased", background: SURFACE },
         "::selection": { background: MARK, color: INK },
-        mark: { background: MARK, color: INK, padding: "0 3px" },
+        mark: { background: MARK, color: INK, padding: "0 3px", borderRadius: 2 },
         "*:focus-visible": {
           outline: `2px solid ${MARK}`,
           outlineOffset: 2,
-          borderRadius: 3,
+          borderRadius: 4,
         },
       },
     },
@@ -65,8 +68,9 @@ export const theme = createTheme({
         root: {
           backgroundImage: "none",
           border: `1px solid ${RAIL}`,
+          borderRadius: 6,
         },
-        rounded: { borderRadius: 3 },
+        rounded: { borderRadius: 6 },
       },
     },
     MuiAppBar: {
@@ -74,19 +78,19 @@ export const theme = createTheme({
         root: {
           backgroundColor: CARD,
           color: INK,
-          boxShadow: "none",
+          boxShadow: "0 1px 3px rgba(20,22,26,.06)",
           borderBottom: `1px solid ${RAIL}`,
         },
       },
     },
     MuiToolbar: {
-      styleOverrides: { root: { minHeight: 56 } },
+      styleOverrides: { root: { minHeight: 60 } },
     },
     MuiDrawer: {
       styleOverrides: {
         paper: {
-          backgroundColor: CARD,
-          borderRight: `1px solid ${RAIL}`,
+          backgroundColor: SIDEBAR_BG,
+          borderRight: "none",
           backgroundImage: "none",
         },
       },
@@ -94,44 +98,68 @@ export const theme = createTheme({
     MuiListItemButton: {
       styleOverrides: {
         root: {
-          borderRadius: 3,
-          borderLeft: "2px solid transparent",
-          "&.Mui-selected": {
-            backgroundColor: EDGE_SOFT,
-            borderLeftColor: MARK,
-            "&:hover": { backgroundColor: EDGE_SOFT },
+          borderRadius: 6,
+          borderLeft: "3px solid transparent",
+          color: "rgba(255,255,255,0.6)",
+          "&:hover": {
+            backgroundColor: "rgba(255,255,255,0.08)",
+            color: "#fff",
           },
-          "&:hover": { backgroundColor: EDGE_SOFT },
+          "&.Mui-selected": {
+            backgroundColor: "rgba(255,198,71,0.12)",
+            borderLeftColor: MARK,
+            color: "#fff",
+            "&:hover": { backgroundColor: "rgba(255,198,71,0.18)" },
+          },
+          "&.Mui-disabled": {
+            color: "rgba(255,255,255,0.25)",
+          },
         },
+      },
+    },
+    MuiListItemText: {
+      styleOverrides: {
+        primary: { color: "inherit" },
+        secondary: { color: "rgba(255,255,255,0.45)" },
       },
     },
     MuiCard: {
       styleOverrides: {
         root: {
           border: `1px solid ${RAIL}`,
-          boxShadow: "0 1px 0 rgba(20,22,26,.04), 0 10px 24px -20px rgba(20,22,26,.35)",
+          borderRadius: 8,
+          boxShadow: "0 1px 2px rgba(20,22,26,.04), 0 4px 12px -4px rgba(20,22,26,.08)",
+          transition: "box-shadow 0.2s ease, transform 0.15s ease",
+          "&:hover": {
+            boxShadow: "0 2px 4px rgba(20,22,26,.06), 0 8px 24px -8px rgba(20,22,26,.12)",
+          },
         },
       },
     },
     MuiButton: {
       defaultProps: { disableElevation: true },
       styleOverrides: {
-        root: { borderRadius: 3 },
+        root: { borderRadius: 6, fontWeight: 600 },
         contained: {
+          background: `linear-gradient(135deg, ${EDGE} 0%, ${EDGE_DARK} 100%)`,
           "&:hover": {
-            boxShadow: "0 10px 24px -16px rgba(30,58,138,.55)",
+            background: `linear-gradient(135deg, ${EDGE_DARK} 0%, ${EDGE} 100%)`,
+            boxShadow: `0 8px 24px -12px ${EDGE}`,
           },
         },
-        outlined: { "&:hover": { borderColor: EDGE } },
+        outlined: {
+          borderColor: RAIL,
+          "&:hover": { borderColor: EDGE, backgroundColor: EDGE_SOFT },
+        },
         sizeSmall: { fontSize: "0.62rem" },
       },
     },
     MuiIconButton: {
-      styleOverrides: { root: { borderRadius: 3 } },
+      styleOverrides: { root: { borderRadius: 6 } },
     },
     MuiChip: {
       styleOverrides: {
-        root: { borderRadius: 3, fontWeight: 500 },
+        root: { borderRadius: 4, fontWeight: 500 },
         sizeSmall: { fontSize: "0.62rem" },
       },
     },
@@ -139,7 +167,7 @@ export const theme = createTheme({
       styleOverrides: {
         root: {
           fontFamily: MONO,
-          fontSize: "0.7rem",
+          fontSize: "0.68rem",
           letterSpacing: "0.08em",
           textTransform: "uppercase",
           minHeight: 44,
@@ -147,28 +175,37 @@ export const theme = createTheme({
       },
     },
     MuiTabs: {
-      styleOverrides: { indicator: { backgroundColor: MARK, height: 2 } },
+      styleOverrides: { indicator: { backgroundColor: MARK, height: 2, borderRadius: 1 } },
     },
     MuiLinearProgress: {
       styleOverrides: {
-        root: { backgroundColor: RAIL },
-        bar: { backgroundColor: MARK },
+        root: { backgroundColor: RAIL, borderRadius: 2 },
+        bar: { backgroundColor: MARK, borderRadius: 2 },
       },
     },
     MuiTextField: {
       defaultProps: { size: "small" },
+      styleOverrides: {
+        root: {
+          "& .MuiOutlinedInput-root": {
+            borderRadius: 6,
+            "&.Mui-focused fieldset": { borderColor: EDGE },
+          },
+        },
+      },
     },
     MuiTableCell: {
       styleOverrides: {
         head: {
           fontFamily: MONO,
-          fontSize: "0.62rem",
+          fontSize: "0.6rem",
           letterSpacing: "0.12em",
           textTransform: "uppercase",
           color: MUTED,
           borderBottom: `1px solid ${RAIL}`,
+          fontWeight: 600,
         },
-        body: { borderBottom: `1px dashed ${RAIL}`, fontSize: "0.86rem" },
+        body: { borderBottom: `1px dashed ${RAIL}`, fontSize: "0.84rem" },
       },
     },
     MuiTableRow: {
@@ -177,12 +214,12 @@ export const theme = createTheme({
       },
     },
     MuiDialog: {
-      styleOverrides: { paper: { border: `1px solid ${RAIL}` } },
+      styleOverrides: { paper: { border: `1px solid ${RAIL}`, borderRadius: 12 } },
     },
     MuiAlert: {
       styleOverrides: {
         root: {
-          borderRadius: 3,
+          borderRadius: 6,
           "&.MuiAlert-standardError": { backgroundColor: "rgba(196,61,61,.08)" },
           "&.MuiAlert-standardInfo": { backgroundColor: EDGE_SOFT },
           "&.MuiAlert-standardSuccess": { backgroundColor: "rgba(30,122,70,.08)" },
@@ -190,5 +227,10 @@ export const theme = createTheme({
       },
     },
     MuiDivider: { styleOverrides: { root: { borderColor: RAIL } } },
+    MuiSelect: {
+      styleOverrides: {
+        root: { borderRadius: 6 },
+      },
+    },
   },
 });
