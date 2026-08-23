@@ -155,7 +155,10 @@ async def publish_all(
     return created
 
 
-async def auto_publish_clip(store: JobStore, job_id: str, clip_id: str) -> None:
+async def auto_publish_clip(
+    store: JobStore, job_id: str, clip_id: str,
+    platform: str = "youtube_shorts", account: str | None = None,
+) -> None:
     """Publicación automática de un clip recién marcado cuando el job tiene
     auto_publish activado."""
     job = store.get_job(job_id)
@@ -165,6 +168,6 @@ async def auto_publish_clip(store: JobStore, job_id: str, clip_id: str) -> None:
     if clip is None or not clip.publish:
         return
     try:
-        await publish_one(store, job, clip)
+        await publish_one(store, job, clip, platform=platform, account=account)
     except Exception as exc:  # noqa: BLE001
         logger.warning("publicación automática falló para %s: %s", clip_id, exc)

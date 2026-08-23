@@ -13,6 +13,8 @@ export interface Job {
   clip_count: number;
   post_count: number;
   auto_publish: boolean;
+  auto_publish_platform: string;
+  auto_publish_account: string | null;
   created_at: string;
 }
 
@@ -273,11 +275,20 @@ export function setClipPublish(jobId: string, clipId: string, publish: boolean):
   });
 }
 
-export function patchJobSettings(jobId: string, autoPublish: boolean): Promise<Job> {
+export function patchJobSettings(
+  jobId: string,
+  autoPublish: boolean,
+  platform?: string,
+  account?: string | null,
+): Promise<Job> {
   return request<Job>(`/api/jobs/${jobId}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ auto_publish: autoPublish }),
+    body: JSON.stringify({
+      auto_publish: autoPublish,
+      auto_publish_platform: platform ?? "youtube_shorts",
+      auto_publish_account: account ?? null,
+    }),
   });
 }
 

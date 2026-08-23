@@ -399,6 +399,8 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
     ) -> Job:
         job = owned_job(job_id, user.id)
         job.auto_publish = body.auto_publish
+        job.auto_publish_platform = body.auto_publish_platform
+        job.auto_publish_account = body.auto_publish_account
         store.save_job(job)
         return job
 
@@ -468,7 +470,10 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
         if clip is None:
             raise HTTPException(status_code=404, detail="clip not found")
         if body.publish and job.auto_publish and job.status == "done":
-            enqueue_auto_publish(job.id, clip.id, str(store.root))
+            enqueue_auto_publish(
+                job.id, clip.id, str(store.root),
+                job.auto_publish_platform, job.auto_publish_account,
+            )
         return clip
 
     @app.post("/api/jobs/{job_id}/clips/{clip_id}/export", response_model=Clip)
