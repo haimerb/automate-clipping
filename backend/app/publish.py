@@ -36,7 +36,7 @@ PLATFORM_ACCOUNT_MAP = {
     "otros": "otros",
 }
 
-PUBLISHED_STATUSES = {"publicado", "listo"}
+PUBLISHED_STATUSES = {"publicado"}
 
 
 def _job_description(clip: Clip) -> str:
@@ -65,9 +65,14 @@ def _platform_account(
         db.close()
 
 
-def _already_published(store: JobStore, job_id: str, clip_id: str, platform: str) -> bool:
+def _already_published(
+    store: JobStore, job_id: str, clip_id: str, platform: str, account: str | None = None
+) -> bool:
     return any(
-        p.clip_id == clip_id and p.platform == platform and p.status in PUBLISHED_STATUSES
+        p.clip_id == clip_id
+        and p.platform == platform
+        and p.account == account
+        and p.status in PUBLISHED_STATUSES
         for p in store.get_posts(job_id)
     )
 
@@ -88,7 +93,7 @@ async def publish_one(
     """Publica un clip: exporta el archivo y, si hay credenciales de YouTube,
     lo sube de verdad vía la API. Si no, deja un post 'listo' con el enlace
     directo para subirlo a YouTube Studio."""
-    if _already_published(store, job.id, clip.id, platform):
+    if _already_published(store, job.id, clip.id, platform, account):
         return None
 
     if not (clip.exported and clip.export_name):

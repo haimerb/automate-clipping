@@ -168,7 +168,14 @@ def test_publish_skips_when_already_published(tmp_path, auth_headers, sample_vid
     client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
     client.post(
         "/api/accounts",
-        json={"platform": "youtube", "name": "Canal Duplicado", "handle": "@x", "token": "RT-DUP"},
+        json={
+            "platform": "youtube",
+            "name": "Canal Duplicado",
+            "handle": "@x",
+            "token": "1//fake_refresh_token",
+            "client_id": "fake_id",
+            "client_secret": "fake_secret",
+        },
         headers=auth_headers,
     )
     job = store.get_job(job_id)
@@ -183,6 +190,7 @@ def test_publish_skips_when_already_published(tmp_path, auth_headers, sample_vid
     first = asyncio.run(pubmod.publish_one(store, job, clip, account="Canal Duplicado"))
     second = asyncio.run(pubmod.publish_one(store, job, clip, account="Canal Duplicado"))
     assert first is not None
+    assert first.status == "publicado"
     assert second is None
 
 
@@ -260,13 +268,16 @@ def test_publish_clip_endpoint_returns_existing_when_duplicated(
         headers=auth_headers,
     )
     assert first.status_code == 201
+    assert first.json()["status"] == "listo"
+
     second = client.post(
         f"/api/jobs/{job_id}/clips/{clip_id}/publish",
         json={"platform": "tiktok"},
         headers=auth_headers,
     )
     assert second.status_code == 201
-    assert second.json()["id"] == first.json()["id"]
+    assert second.json()["status"] == "listo"
+    assert second.json()["id"] != first.json()["id"]
 
 
 def test_publish_clip_resolves_account_by_platform(
