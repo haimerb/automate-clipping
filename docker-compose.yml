@@ -27,5 +27,25 @@ services:
       timeout: 3s
       retries: 10
 
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: edgetape-worker
+    env_file: .env
+    environment:
+      - EDGETAPE_CELERY_BROKER=redis://redis:6379/0
+      - EDGETAPE_STORAGE=/data/storage
+      - EDGETAPE_DATABASE_URL=postgresql://edgetape:edgetape@db:5432/edgetape
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/storage:/data/storage
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   pgdata:

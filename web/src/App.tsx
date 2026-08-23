@@ -29,9 +29,10 @@ import Accounts from "./components/Accounts";
 import Publish from "./components/Publish";
 import Generate from "./components/Generate";
 import Auth from "./components/Auth";
+import ConfirmDialog from "./components/ConfirmDialog";
 import { getClips, getJob, getMe, getToken, setToken } from "./api";
 import type { Clip, Job, User } from "./api";
-import { CARD, INK, MARK, SIDEBAR_WIDTH } from "./theme";
+import { CARD, INK, MARK, MONO, SIDEBAR_WIDTH } from "./theme";
 
 type Phase = "upload" | "reel" | "publish" | "generate" | "accounts" | "dashboard";
 
@@ -105,7 +106,7 @@ function Brand() {
       >
         <Typography
           sx={{
-            fontFamily: "'Fragment Mono', monospace",
+            fontFamily: MONO,
             fontSize: "0.9rem",
             fontWeight: 700,
             color: INK,
@@ -118,7 +119,7 @@ function Brand() {
       <Box>
         <Typography
           sx={{
-            fontFamily: "'Fragment Mono', monospace",
+            fontFamily: MONO,
             fontSize: "1rem",
             fontWeight: 600,
             color: "#fff",
@@ -130,7 +131,7 @@ function Brand() {
         </Typography>
         <Typography
           sx={{
-            fontFamily: "'Fragment Mono', monospace",
+            fontFamily: MONO,
             fontSize: "0.52rem",
             color: "rgba(255,255,255,0.35)",
             letterSpacing: "0.1em",
@@ -218,7 +219,7 @@ function SidebarContent({ nav, active, badge, disabled, onNavigate, onLogout, us
                       borderRadius: 1,
                       background: active === item.phase ? MARK : "rgba(255,255,255,0.12)",
                       color: active === item.phase ? INK : "rgba(255,255,255,0.7)",
-                      fontFamily: "'Fragment Mono', monospace",
+                      fontFamily: MONO,
                       fontSize: "0.6rem",
                       fontWeight: 600,
                       display: "flex",
@@ -269,7 +270,7 @@ function SidebarContent({ nav, active, badge, disabled, onNavigate, onLogout, us
             </Typography>
             <Typography
               sx={{
-                fontFamily: "'Fragment Mono', monospace",
+                fontFamily: MONO,
                 fontSize: "0.56rem",
                 color: "rgba(255,255,255,0.35)",
                 whiteSpace: "nowrap",
@@ -300,6 +301,7 @@ export default function App() {
   const [job, setJob] = useState<Job | null>(null);
   const [clips, setClips] = useState<Clip[]>([]);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [notReadyAlert, setNotReadyAlert] = useState(false);
 
   useEffect(() => {
     if (!getToken()) return;
@@ -338,7 +340,7 @@ export default function App() {
   async function openJob(jobId: string) {
     const found = await getJob(jobId);
     if (found.status !== "done") {
-      window.alert("Este video aún no está listo para ver clips.");
+      setNotReadyAlert(true);
       return;
     }
     await handleReady(found);
@@ -456,7 +458,7 @@ export default function App() {
                   variant="caption"
                   color="text.secondary"
                   sx={{
-                    fontFamily: "'Fragment Mono', monospace",
+                    fontFamily: MONO,
                     fontSize: "0.62rem",
                     whiteSpace: "nowrap",
                     overflow: "hidden",
@@ -475,7 +477,7 @@ export default function App() {
             <Box sx={{ ml: job ? 1 : "auto", display: { xs: "none", sm: "flex" }, alignItems: "center", gap: 1.5 }}>
               <Typography
                 variant="body2"
-                sx={{ fontFamily: "'Fragment Mono', monospace", fontSize: "0.7rem", color: "text.secondary" }}
+                sx={{ fontFamily: MONO, fontSize: "0.7rem", color: "text.secondary" }}
               >
                 {user.name}
               </Typography>
@@ -539,7 +541,7 @@ export default function App() {
           }}
         >
           <Stack direction="row" spacing={2} sx={{ alignItems: "center", flexWrap: "wrap" }}>
-            <Typography sx={{ fontFamily: "'Fragment Mono', monospace", fontSize: "0.68rem" }}>
+            <Typography sx={{ fontFamily: MONO, fontSize: "0.68rem" }}>
               edgetape<span style={{ color: MARK }}>.</span>
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ ml: "auto", fontSize: "0.72rem" }}>
@@ -548,6 +550,16 @@ export default function App() {
           </Stack>
         </Box>
       </Box>
+      <ConfirmDialog
+        open={notReadyAlert}
+        title="Video no listo"
+        message="Este video aún no está listo para ver clips. Espera a que termine de procesarse."
+        confirmLabel="Entendido"
+        cancelLabel=""
+        severity="info"
+        onConfirm={() => setNotReadyAlert(false)}
+        onCancel={() => setNotReadyAlert(false)}
+      />
     </Box>
   );
 }

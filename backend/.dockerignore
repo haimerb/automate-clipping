@@ -1,0 +1,5 @@
+.pytest_cache
+tests
+storage
+celery.log
+server.log

@@ -24,20 +24,12 @@ import {
   TableRow,
   Typography,
 } from "@mui/material";
-import { EDGE, MARK } from "../theme";
+import { EDGE, INK, MARK, MONO } from "../theme";
+import ConfirmDialog from "./ConfirmDialog";
 
 interface Props {
   onNewJob: () => void;
   onOpenJob: (job: Job) => void;
-}
-
-async function openJob(jobId: string, onOpenJob: (job: Job) => void) {
-  const job = await getJob(jobId);
-  if (job.status !== "done") {
-    window.alert("Este video aún no está listo para ver clips.");
-    return;
-  }
-  onOpenJob(job);
 }
 
 function StatCard({
@@ -64,7 +56,7 @@ function StatCard({
     >
       <Typography
         variant="overline"
-        sx={{ display: "block", fontSize: "0.58rem", ...(highlight ? { color: "#14161A" } : {}) }}
+        sx={{ display: "block", fontSize: "0.58rem", ...(highlight ? { color: INK } : {}) }}
       >
         {label}
       </Typography>
@@ -72,7 +64,7 @@ function StatCard({
         variant="h4"
         sx={{
           lineHeight: 1.1,
-          ...(highlight ? { color: "#14161A" } : {}),
+          ...(highlight ? { color: INK } : {}),
         }}
       >
         {value}
@@ -98,6 +90,16 @@ export default function Dashboard({ onNewJob, onOpenJob }: Props) {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [accounts, setAccounts] = useState<LinkedAccount[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [notReadyAlert, setNotReadyAlert] = useState(false);
+
+  async function openJob(jobId: string) {
+    const job = await getJob(jobId);
+    if (job.status !== "done") {
+      setNotReadyAlert(true);
+      return;
+    }
+    onOpenJob(job);
+  }
 
   async function refresh() {
     try {
@@ -118,7 +120,7 @@ export default function Dashboard({ onNewJob, onOpenJob }: Props) {
   const pending = stats ? stats.posts - stats.publicados : 0;
 
   return (
-    <Container maxWidth="lg" sx={{ py: { xs: 4, md: 6 } }}>
+    <Container maxWidth="lg" sx={{ py: { xs: 5, md: 7 } }}>
       <Stack
         direction={{ xs: "column", md: "row" }}
         spacing={2}
@@ -231,10 +233,10 @@ export default function Dashboard({ onNewJob, onOpenJob }: Props) {
                     <TableRow key={key}>
                       <TableCell sx={{ fontWeight: 600 }}>{PLATFORM_LABELS[key] ?? key}</TableCell>
                       <TableCell align="right">{tot.posts}</TableCell>
-                      <TableCell align="right" sx={{ fontFamily: "'Fragment Mono', monospace", fontSize: "0.78rem" }}>
+                      <TableCell align="right" sx={{ fontFamily: MONO, fontSize: "0.78rem" }}>
                         {tot.views.toLocaleString("es")}
                       </TableCell>
-                      <TableCell align="right" sx={{ fontFamily: "'Fragment Mono', monospace", fontSize: "0.78rem" }}>
+                      <TableCell align="right" sx={{ fontFamily: MONO, fontSize: "0.78rem" }}>
                         {tot.likes.toLocaleString("es")}
                       </TableCell>
                       <TableCell align="right" sx={{ fontWeight: 600 }}>
@@ -299,7 +301,7 @@ export default function Dashboard({ onNewJob, onOpenJob }: Props) {
                       <Typography
                         variant="body2"
                         color="text.secondary"
-                        sx={{ fontFamily: "'Fragment Mono', monospace", fontSize: "0.74rem" }}
+                        sx={{ fontFamily: MONO, fontSize: "0.74rem" }}
                       >
                         {post.views.toLocaleString("es")} vistas
                       </Typography>
@@ -307,7 +309,7 @@ export default function Dashboard({ onNewJob, onOpenJob }: Props) {
                       <Button
                         size="small"
                         variant="outlined"
-                        onClick={() => void openJob(post.job_id, onOpenJob).catch(() => {})}
+                        onClick={() => void openJob(post.job_id).catch(() => {})}
                       >
                         abrir clips
                       </Button>
@@ -322,11 +324,21 @@ export default function Dashboard({ onNewJob, onOpenJob }: Props) {
 
       <Box sx={{ mt: 5, display: "flex", gap: 1.5, alignItems: "center" }}>
         <Box aria-hidden sx={{ flex: 1, height: 8, borderRadius: 2, background: `repeating-linear-gradient(90deg, transparent 0 6px, ${EDGE} 6px 8px, transparent 8px 14px)`, opacity: 0.5 }} />
-        <Typography variant="caption" color="text.secondary" sx={{ fontFamily: "'Fragment Mono', monospace", fontSize: "0.6rem", letterSpacing: "0.1em" }}>
+        <Typography variant="caption" color="text.secondary" sx={{ fontFamily: MONO, fontSize: "0.6rem", letterSpacing: "0.1em" }}>
           EDGETAPE · RENDIMIENTO
         </Typography>
         <Box aria-hidden sx={{ flex: 1, height: 8, borderRadius: 2, background: `repeating-linear-gradient(90deg, transparent 0 6px, ${EDGE} 6px 8px, transparent 8px 14px)`, opacity: 0.5 }} />
       </Box>
+      <ConfirmDialog
+        open={notReadyAlert}
+        title="Video no listo"
+        message="Este video aún no está listo para ver clips. Espera a que termine de procesarse."
+        confirmLabel="Entendido"
+        cancelLabel=""
+        severity="info"
+        onConfirm={() => setNotReadyAlert(false)}
+        onCancel={() => setNotReadyAlert(false)}
+      />
     </Container>
   );
 }

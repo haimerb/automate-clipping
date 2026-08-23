@@ -4,6 +4,7 @@ import ClipCard from "./ClipCard";
 import ClipPreview from "./ClipPreview";
 import BarWave from "./BarWave";
 import MonetizationPanel from "./MonetizationPanel";
+import ConfirmDialog from "./ConfirmDialog";
 import {
   downloadUrl,
   exportClip,
@@ -12,7 +13,7 @@ import {
   setClipPublish,
 } from "../api";
 import type { Clip, Job } from "../api";
-import { EDGE, INK, MARK, SURFACE_2 } from "../theme";
+import { EDGE, INK, MARK, MONO, SURFACE_2 } from "../theme";
 
 interface Props {
   job: Job;
@@ -40,6 +41,7 @@ export default function Reel({
 }: Props) {
   const [selected, setSelected] = useState<Clip | null>(clips[0] ?? null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [errorDialog, setErrorDialog] = useState<string | null>(null);
 
   const selectedClip = selected ? clips.find((c) => c.id === selected.id) ?? selected : null;
   const toPublish = clips.filter((c) => c.publish).length;
@@ -52,7 +54,7 @@ export default function Reel({
       onUpdateClip(updated);
       setSelected(updated);
     } catch (err) {
-      window.alert(err instanceof Error ? err.message : "Falló la exportación");
+      setErrorDialog(err instanceof Error ? err.message : "Falló la exportación");
     } finally {
       setBusy(null);
     }
@@ -64,7 +66,7 @@ export default function Reel({
       const updated = await setClipPublish(job.id, clip.id, publish);
       onUpdateClip(updated);
     } catch (err) {
-      window.alert(err instanceof Error ? err.message : "No se pudo marcar el clip");
+      setErrorDialog(err instanceof Error ? err.message : "No se pudo marcar el clip");
     } finally {
       setBusy(null);
     }
@@ -72,7 +74,7 @@ export default function Reel({
 
   return (
     <Box component="section">
-      <Container maxWidth="lg" sx={{ py: { xs: 4, md: 6 } }}>
+        <Container maxWidth="lg" sx={{ py: { xs: 5, md: 7 } }}>
         <Stack
           direction={{ xs: "column", md: "row" }}
           spacing={2}
@@ -131,7 +133,7 @@ export default function Reel({
       <Box aria-hidden sx={{ height: 14, background: `repeating-linear-gradient(to right, ${INK} 0 12px, transparent 12px 26px)`, opacity: 0.85 }} />
 
       <Box sx={{ bgcolor: SURFACE_2, borderTop: "1px solid", borderBottom: "1px solid", borderColor: "divider" }}>
-        <Container maxWidth="lg" sx={{ py: { xs: 4, md: 6 } }}>
+      <Container maxWidth="lg" sx={{ py: { xs: 5, md: 7 } }}>
           {clips.length === 0 ? (
             <Paper sx={{ p: 5, textAlign: "center", borderStyle: "dashed" }}>
               <Typography variant="h6">No se encontraron clips</Typography>
@@ -212,7 +214,7 @@ export default function Reel({
                               <Typography variant="overline" sx={{ display: "block", fontSize: "0.56rem" }}>
                                 Entrada
                               </Typography>
-                              <Typography sx={{ fontFamily: "'Fragment Mono', monospace", fontSize: "0.9rem", color: EDGE, fontWeight: 600 }}>
+                              <Typography sx={{ fontFamily: MONO, fontSize: "0.9rem", color: EDGE, fontWeight: 600 }}>
                                 {formatTimecode(selectedClip.start)}
                               </Typography>
                             </Box>
@@ -220,7 +222,7 @@ export default function Reel({
                               <Typography variant="overline" sx={{ display: "block", fontSize: "0.56rem" }}>
                                 Salida
                               </Typography>
-                              <Typography sx={{ fontFamily: "'Fragment Mono', monospace", fontSize: "0.9rem", color: EDGE, fontWeight: 600 }}>
+                              <Typography sx={{ fontFamily: MONO, fontSize: "0.9rem", color: EDGE, fontWeight: 600 }}>
                                 {formatTimecode(selectedClip.end)}
                               </Typography>
                             </Box>
@@ -228,7 +230,7 @@ export default function Reel({
                               <Typography variant="overline" sx={{ display: "block", fontSize: "0.56rem" }}>
                                 Duración
                               </Typography>
-                              <Typography sx={{ fontFamily: "'Fragment Mono', monospace", fontSize: "0.9rem", color: EDGE, fontWeight: 600 }}>
+                              <Typography sx={{ fontFamily: MONO, fontSize: "0.9rem", color: EDGE, fontWeight: 600 }}>
                                 {formatDuration(selectedClip.duration)}
                               </Typography>
                             </Box>
@@ -277,6 +279,16 @@ export default function Reel({
           <Button onClick={onReset}>Procesar otra grabación</Button>
         </Stack>
       </Container>
+      <ConfirmDialog
+        open={errorDialog !== null}
+        title="Error"
+        message={errorDialog ?? ""}
+        confirmLabel="Entendido"
+        cancelLabel=""
+        severity="error"
+        onConfirm={() => setErrorDialog(null)}
+        onCancel={() => setErrorDialog(null)}
+      />
     </Box>
   );
 }

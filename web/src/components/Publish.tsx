@@ -30,7 +30,7 @@ import {
 import type { Clip, Job, LinkedAccount, PlatformPost } from "../api";
 import ClipPreview from "./ClipPreview";
 import MonetizationPanel from "./MonetizationPanel";
-import { EDGE, INK, MARK } from "../theme";
+import { EDGE, INK, MARK, MONO } from "../theme";
 
 interface Props {
   job: Job;
@@ -70,6 +70,7 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
   const [autoPublishAccount, setAutoPublishAccount] = useState(job.auto_publish_account || "");
   const [posts, setPosts] = useState<PlatformPost[]>([]);
   const [doneCount, setDoneCount] = useState(0);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
   const selected = clips.filter((c) => c.publish);
 
@@ -173,6 +174,23 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
     try {
       const updated = await patchJobSettings(job.id, next, autoPublishPlatform, autoPublishAccount || null);
       onJobChange(updated);
+      if (next) {
+        const marked = clips.filter((c) => c.publish).length;
+        if (marked > 0) {
+          setSuccessMsg(`Publicando ${marked} clip${marked > 1 ? "s" : ""} marcado${marked > 1 ? "s" : ""}...`);
+          let attempts = 0;
+          const poll = setInterval(async () => {
+            await refreshPosts();
+            attempts++;
+            if (attempts >= 6) {
+              clearInterval(poll);
+              setSuccessMsg(`Publicaciones encoladas. Revisa la tabla de más abajo.`);
+            }
+          }, 3000);
+        }
+      } else {
+        setSuccessMsg(null);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo guardar la configuración");
       setAutoPublish(job.auto_publish);
@@ -254,6 +272,12 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
           </Alert>
         )}
 
+        {successMsg && (
+          <Alert severity="success" sx={{ mt: 3 }} onClose={() => setSuccessMsg(null)}>
+            {successMsg}
+          </Alert>
+        )}
+
         {doneCount > 0 && (
           <Alert severity="success" sx={{ mt: 3 }}>
             {doneCount} {doneCount === 1 ? "publicación creada" : "publicaciones creadas"} — revisa
@@ -292,7 +316,7 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
                 <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ alignItems: "center" }}>
                   <Typography
                     variant="body2"
-                    sx={{ fontFamily: "'Fragment Mono', monospace", fontSize: "0.72rem" }}
+                    sx={{ fontFamily: MONO, fontSize: "0.72rem" }}
                   >
                     {destCount} {destCount === 1 ? "destino" : "destinos"}
                   </Typography>
@@ -409,7 +433,7 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
                       <Typography
                         sx={{
                           mt: 1,
-                          fontFamily: "'Fragment Mono', monospace",
+                          fontFamily: MONO,
                           fontSize: "0.66rem",
                           color: "text.secondary",
                         }}

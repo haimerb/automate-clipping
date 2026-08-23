@@ -25,6 +25,8 @@ import {
   formatMoney,
 } from "../api";
 import type { Clip, LinkedAccount, PlatformPost } from "../api";
+import { MONO } from "../theme";
+import ConfirmDialog from "./ConfirmDialog";
 
 interface Props {
   jobId: string;
@@ -92,6 +94,7 @@ export default function MonetizationPanel({ jobId, clip, refreshToken = 0 }: Pro
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<PlatformPost | null>(null);
 
   async function refresh() {
     const all = await getPosts(jobId);
@@ -135,12 +138,18 @@ export default function MonetizationPanel({ jobId, clip, refreshToken = 0 }: Pro
   }
 
   async function onDelete(post: PlatformPost) {
-    if (!window.confirm("¿Eliminar este registro de publicación?")) return;
+    setDeleteConfirm(post);
+  }
+
+  async function confirmDelete() {
+    if (!deleteConfirm) return;
     try {
-      await deletePost(jobId, post.id);
+      await deletePost(jobId, deleteConfirm.id);
+      setDeleteConfirm(null);
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo eliminar");
+      setDeleteConfirm(null);
     }
   }
 
@@ -215,7 +224,7 @@ export default function MonetizationPanel({ jobId, clip, refreshToken = 0 }: Pro
                       <Typography
                         variant="caption"
                         color="text.secondary"
-                        sx={{ fontFamily: "'Fragment Mono', monospace", fontSize: "0.62rem" }}
+                        sx={{ fontFamily: MONO, fontSize: "0.62rem" }}
                       >
                         {post.account}
                       </Typography>
@@ -350,6 +359,16 @@ export default function MonetizationPanel({ jobId, clip, refreshToken = 0 }: Pro
           </Stack>
         </Paper>
       )}
+      <ConfirmDialog
+        open={deleteConfirm !== null}
+        title="Eliminar publicación"
+        message="¿Eliminar este registro de publicación? Esta acción no se puede deshacer."
+        confirmLabel="Eliminar"
+        cancelLabel="Cancelar"
+        severity="error"
+        onConfirm={() => void confirmDelete()}
+        onCancel={() => setDeleteConfirm(null)}
+      />
     </Box>
   );
 }

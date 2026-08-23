@@ -3,7 +3,7 @@ import BarWave from "./BarWave";
 import ClipPreview from "./ClipPreview";
 import { formatDuration, formatTimecode } from "../api";
 import type { Clip } from "../api";
-import { EDGE, INK, MARK } from "../theme";
+import { EDGE, INK, MARK, MONO } from "../theme";
 
 interface Props {
   jobId: string;
@@ -59,7 +59,7 @@ export default function ClipCard({ jobId, clip, active, onSelect, onTogglePublis
         >
           CLIP {String(clip.index).padStart(2, "0")}
         </Typography>
-        <Typography sx={{ fontFamily: "'Fragment Mono', monospace", fontSize: "0.62rem", color: "text.secondary", whiteSpace: "nowrap" }}>
+        <Typography sx={{ fontFamily: MONO, fontSize: "0.62rem", color: "text.secondary", whiteSpace: "nowrap" }}>
           {formatTimecode(clip.start)} → {formatTimecode(clip.end)}
         </Typography>
       </Box>
@@ -67,7 +67,7 @@ export default function ClipCard({ jobId, clip, active, onSelect, onTogglePublis
       <BarWave seed={`${clip.id}-${clip.index}`} active={active} />
 
       <Box sx={{ display: "flex", alignItems: "baseline", gap: 1 }}>
-        <Typography sx={{ fontFamily: "'Fragment Mono', monospace", fontSize: "0.66rem", color: "primary.main", whiteSpace: "nowrap" }}>
+        <Typography sx={{ fontFamily: MONO, fontSize: "0.66rem", color: "primary.main", whiteSpace: "nowrap" }}>
           {formatDuration(clip.duration)}
         </Typography>
         <Typography sx={{ fontWeight: 600, fontSize: "0.98rem", lineHeight: 1.3 }}>
