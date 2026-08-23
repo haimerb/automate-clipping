@@ -15,6 +15,7 @@ import {
   Switch,
   Typography,
 } from "@mui/material";
+import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import {
   PLATFORM_LABELS,
   POST_STATUS_LABELS,
@@ -29,7 +30,7 @@ import {
 import type { Clip, Job, LinkedAccount, PlatformPost } from "../api";
 import ClipPreview from "./ClipPreview";
 import MonetizationPanel from "./MonetizationPanel";
-import { EDGE, MARK } from "../theme";
+import { EDGE, INK, MARK } from "../theme";
 
 interface Props {
   job: Job;
@@ -46,12 +47,22 @@ interface Destination {
 
 const DEFAULT_PLATFORM = "youtube_shorts";
 
+const DESTS_KEY = "edgetape:dests";
+
+function readDests(): Record<string, Destination[]> {
+  try {
+    return JSON.parse(localStorage.getItem(DESTS_KEY) ?? "{}");
+  } catch {
+    return {};
+  }
+}
+
 export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange }: Props) {
   const [busy, setBusy] = useState<string | null>(null);
   const [publishingAll, setPublishingAll] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [accounts, setAccounts] = useState<LinkedAccount[]>([]);
-  const [dests, setDests] = useState<Record<string, Destination[]>>({});
+  const [dests, setDests] = useState<Record<string, Destination[]>>(readDests);
   const [draftPlatform, setDraftPlatform] = useState<Record<string, string>>({});
   const [draftAccount, setDraftAccount] = useState<Record<string, string>>({});
   const [autoPublish, setAutoPublish] = useState(job.auto_publish);
@@ -87,10 +98,14 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
 
   useEffect(() => setAutoPublish(job.auto_publish), [job.auto_publish]);
 
+  useEffect(() => {
+    localStorage.setItem(DESTS_KEY, JSON.stringify(dests));
+  }, [dests]);
+
   const postByDest = useMemo(() => {
     const map: Record<string, PlatformPost> = {};
     for (const p of posts) {
-      const key = `${p.clip_id}|${p.platform}`;
+      const key = `${p.clip_id}|${p.platform}|${p.account ?? ""}`;
       if (key in map) continue;
       map[key] = p;
     }
@@ -163,8 +178,8 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
     setBusy(key);
     setError(null);
     try {
-      await publishClip(job.id, clip.id, dest.platform, dest.account || null);
-      setDoneCount((c) => c + 1);
+      const post = await publishClip(job.id, clip.id, dest.platform, dest.account || null);
+      if (post) setDoneCount((c) => c + 1);
       await refreshPosts();
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo publicar el clip");
@@ -181,16 +196,16 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
     setPublishingAll(true);
     setError(null);
     setDoneCount(0);
+    const errors: string[] = [];
     for (const { clip, dest } of targets) {
       try {
-        await publishClip(job.id, clip.id, dest.platform, dest.account || null);
-        setDoneCount((c) => c + 1);
+        const post = await publishClip(job.id, clip.id, dest.platform, dest.account || null);
+        if (post) setDoneCount((c) => c + 1);
       } catch (err) {
-        if (!error) {
-          setError(err instanceof Error ? err.message : "No se pudo publicar todo");
-        }
+        errors.push(err instanceof Error ? err.message : "Error al publicar");
       }
     }
+    if (errors.length) setError(errors.join("; "));
     await refreshPosts();
     setPublishingAll(false);
   }
@@ -240,7 +255,7 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
           </Paper>
         ) : (
           <>
-            <Paper sx={{ mt: 4, p: 3, bgcolor: "#E9EEF9" }}>
+            <Paper sx={{ mt: 4, p: 3, bgcolor: "action.hover" }}>
               <Stack
                 direction={{ xs: "column", md: "row" }}
                 spacing={2}
@@ -365,7 +380,7 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
                           color={clip.publish ? "secondary" : "primary"}
                           onClick={() => void togglePublish(clip, !clip.publish)}
                           disabled={busy === clip.id || publishingAll}
-                          sx={{ whiteSpace: "nowrap", color: clip.publish ? "#14161A" : undefined }}
+                          sx={{ whiteSpace: "nowrap", color: clip.publish ? INK : undefined }}
                         >
                           {clip.publish ? "✔ Para publicar" : "Para publicar"}
                         </Button>
@@ -389,7 +404,7 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
                             </Typography>
                           )}
                           {clipDests.map((dest, index) => {
-                            const post = postByDest[`${clip.id}|${dest.platform}`];
+                            const post = postByDest[`${clip.id}|${dest.platform}|${dest.account}`];
                             const key = `${clip.id}|${index}`;
                             const busyHere = busy === key;
                             return (
@@ -427,7 +442,7 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
                                         variant={post.status === "publicado" ? "filled" : "outlined"}
                                         sx={{
                                           bgcolor: post.status === "publicado" ? MARK : "transparent",
-                                          color: post.status === "publicado" ? "#14161A" : undefined,
+                                          color: post.status === "publicado" ? INK : undefined,
                                           borderColor: post.status === "publicado" ? MARK : undefined,
                                         }}
                                         label={POST_STATUS_LABELS[post.status] ?? post.status}
@@ -465,7 +480,7 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
                                       onClick={() => removeDestination(clip.id, index)}
                                       disabled={publishingAll}
                                     >
-                                      ✕
+                                      <CloseRoundedIcon fontSize="small" />
                                     </IconButton>
                                   </Stack>
                                 </Stack>
