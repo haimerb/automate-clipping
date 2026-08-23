@@ -27,8 +27,10 @@ import {
   INK,
   MARK,
   MARK_SOFT,
+  MONO,
   MUTED,
   RAIL,
+  SANS,
   SURFACE_2,
 } from "../theme";
 import {
@@ -209,7 +211,7 @@ export default function Generate({ onJobReady, onOpenJob }: GenerateProps) {
             sx={{
               mb: 2,
               "& .MuiOutlinedInput-root": {
-                fontFamily: "'Hanken Grotesk', sans-serif",
+                fontFamily: SANS,
                 fontSize: "0.9rem",
                 lineHeight: 1.6,
               },
@@ -220,7 +222,7 @@ export default function Generate({ onJobReady, onOpenJob }: GenerateProps) {
               size="small"
               label={`${prompt.split(/\s+/).filter(Boolean).length} palabras`}
               sx={{
-                fontFamily: "'Fragment Mono', monospace",
+                fontFamily: MONO,
                 fontSize: "0.6rem",
                 backgroundColor: EDGE_SOFT,
                 color: MUTED,
@@ -230,7 +232,7 @@ export default function Generate({ onJobReady, onOpenJob }: GenerateProps) {
               size="small"
               label={`${duration} seg`}
               sx={{
-                fontFamily: "'Fragment Mono', monospace",
+                fontFamily: MONO,
                 fontSize: "0.6rem",
                 backgroundColor: MARK_SOFT,
                 color: INK,
@@ -240,7 +242,7 @@ export default function Generate({ onJobReady, onOpenJob }: GenerateProps) {
               size="small"
               label={STYLE_OPTIONS.find((s) => s.value === style)?.label}
               sx={{
-                fontFamily: "'Fragment Mono', monospace",
+                fontFamily: MONO,
                 fontSize: "0.6rem",
                 backgroundColor: EDGE_SOFT,
                 color: MUTED,
@@ -273,7 +275,7 @@ export default function Generate({ onJobReady, onOpenJob }: GenerateProps) {
                     onClick={() => setDuration(opt.value)}
                     sx={{
                       minWidth: 80,
-                      fontFamily: "'Fragment Mono', monospace",
+                      fontFamily: MONO,
                       fontSize: "0.65rem",
                     }}
                   >
@@ -295,7 +297,7 @@ export default function Generate({ onJobReady, onOpenJob }: GenerateProps) {
                     size="small"
                     onClick={() => setStyle(opt.value)}
                     sx={{
-                      fontFamily: "'Fragment Mono', monospace",
+                      fontFamily: MONO,
                       fontSize: "0.65rem",
                     }}
                   >
@@ -435,7 +437,7 @@ export default function Generate({ onJobReady, onOpenJob }: GenerateProps) {
           sx={{
             py: 1.5,
             fontSize: "0.85rem",
-            fontFamily: "'Fragment Mono', monospace",
+            fontFamily: MONO,
             textTransform: "uppercase",
             letterSpacing: "0.08em",
           }}
@@ -489,7 +491,7 @@ export default function Generate({ onJobReady, onOpenJob }: GenerateProps) {
                       variant="caption"
                       color="text.secondary"
                       sx={{
-                        fontFamily: "'Fragment Mono', monospace",
+                        fontFamily: MONO,
                         fontSize: "0.58rem",
                       }}
                     >
@@ -505,7 +507,7 @@ export default function Generate({ onJobReady, onOpenJob }: GenerateProps) {
                     size="small"
                     label={j.status === "done" ? "Listo" : j.status === "processing" ? "Procesando..." : j.status}
                     sx={{
-                      fontFamily: "'Fragment Mono', monospace",
+                      fontFamily: MONO,
                       fontSize: "0.58rem",
                       backgroundColor: j.status === "done" ? "rgba(30,122,70,.08)" : j.status === "processing" ? MARK_SOFT : SURFACE_2,
                       color: j.status === "done" ? "#1E7A46" : j.status === "processing" ? INK : MUTED,

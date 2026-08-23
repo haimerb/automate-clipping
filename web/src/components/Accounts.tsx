@@ -27,7 +27,8 @@ import {
   updateAccount,
 } from "../api";
 import type { AccountInput, LinkedAccount } from "../api";
-import { EDGE, MARK } from "../theme";
+import { EDGE, INK, MARK, MONO, SURFACE } from "../theme";
+import ConfirmDialog from "./ConfirmDialog";
 
 const EMPTY: AccountInput = {
   platform: "youtube",
@@ -52,6 +53,8 @@ export default function Accounts() {
   const [busy, setBusy] = useState(false);
   const [connectBusy, setConnectBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<LinkedAccount | null>(null);
 
   async function refresh() {
     try {
@@ -70,10 +73,10 @@ export default function Accounts() {
     if (window.location.search.includes("youtube=connected")) {
       void refresh();
       window.history.replaceState({}, "", window.location.pathname);
-      window.alert("YouTube conectado. Ya puedes publicar clips desde edgetape.");
+      setSuccessMsg("YouTube conectado. Ya puedes publicar clips desde edgetape.");
     } else if (window.location.search.includes("youtube=error")) {
       window.history.replaceState({}, "", window.location.pathname);
-      window.alert("No se pudo conectar YouTube. Revisa las credenciales y el token en la terminal del servidor.");
+      setError("No se pudo conectar YouTube. Revisa las credenciales y el token en la terminal del servidor.");
     }
   }, []);
 
@@ -135,12 +138,18 @@ export default function Accounts() {
   }
 
   async function onDelete(account: LinkedAccount) {
-    if (!window.confirm(`¿Desvincular ${account.name}?`)) return;
+    setDeleteConfirm(account);
+  }
+
+  async function confirmDelete() {
+    if (!deleteConfirm) return;
     try {
-      await deleteAccount(account.id);
+      await deleteAccount(deleteConfirm.id);
+      setDeleteConfirm(null);
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo eliminar");
+      setDeleteConfirm(null);
     }
   }
 
@@ -181,7 +190,7 @@ export default function Accounts() {
             <Chip
               size="small"
               variant="filled"
-              sx={{ bgcolor: MARK, color: "#14161A" }}
+              sx={{ bgcolor: MARK, color: INK }}
               label={`${accounts.filter((a) => a.token).length} conectadas`}
             />
           </Stack>
@@ -256,7 +265,7 @@ export default function Accounts() {
                       <Typography
                         variant="body2"
                         color="text.secondary"
-                        sx={{ fontFamily: "'Fragment Mono', monospace", fontSize: "0.72rem" }}
+                        sx={{ fontFamily: MONO, fontSize: "0.72rem" }}
                       >
                         {account.handle}
                       </Typography>
@@ -269,7 +278,7 @@ export default function Accounts() {
                           variant={apiReady ? "filled" : "outlined"}
                           sx={{
                             bgcolor: apiReady ? MARK : "transparent",
-                            color: apiReady ? "#14161A" : undefined,
+                            color: apiReady ? INK : undefined,
                             borderColor: apiReady ? MARK : undefined,
                             fontSize: "0.6rem",
                           }}
@@ -360,7 +369,7 @@ export default function Accounts() {
 
               {isYoutube ? (
                 <Collapse in={isYoutube} sx={{ mt: 3 }}>
-                  <Paper variant="outlined" sx={{ p: 2, bgcolor: "#F7F9FB" }}>
+                  <Paper variant="outlined" sx={{ p: 2, bgcolor: SURFACE }}>
                     <Typography variant="overline" sx={{ display: "block", color: EDGE }}>
                       Credenciales OAuth de Google Cloud
                     </Typography>
@@ -434,6 +443,21 @@ export default function Accounts() {
             </DialogActions>
           </Box>
         </Dialog>
+        {successMsg && (
+          <Alert severity="success" sx={{ mt: 3 }} onClose={() => setSuccessMsg(null)}>
+            {successMsg}
+          </Alert>
+        )}
+        <ConfirmDialog
+          open={deleteConfirm !== null}
+          title="Desvincular cuenta"
+          message={`¿Desvincular ${deleteConfirm?.name ?? ""}? Esta acción no se puede deshacer.`}
+          confirmLabel="Desvincular"
+          cancelLabel="Cancelar"
+          severity="error"
+          onConfirm={() => void confirmDelete()}
+          onCancel={() => setDeleteConfirm(null)}
+        />
       </Container>
     </Box>
   );

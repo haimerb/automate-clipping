@@ -13,7 +13,7 @@ import {
 } from "@mui/material";
 import { login, register } from "../api";
 import type { User } from "../api";
-import { EDGE, MARK } from "../theme";
+import { EDGE, MARK, MONO } from "../theme";
 
 interface Props {
   onAuth: (user: User) => void;
@@ -72,7 +72,7 @@ export default function Auth({ onAuth }: Props) {
         <Box>
           <Typography
             sx={{
-              fontFamily: "'Fragment Mono', monospace",
+              fontFamily: MONO,
               fontSize: "1.2rem",
               letterSpacing: "0.02em",
             }}
@@ -105,7 +105,7 @@ export default function Auth({ onAuth }: Props) {
                 {i > 0 && <Box aria-hidden sx={{ width: 22, height: 1, bgcolor: "rgba(255,255,255,.35)" }} />}
                 <Typography
                   sx={{
-                    fontFamily: "'Fragment Mono', monospace",
+                    fontFamily: MONO,
                     fontSize: "0.6rem",
                     letterSpacing: "0.18em",
                     color: i === 0 ? MARK : "rgba(255,255,255,.65)",
@@ -118,7 +118,7 @@ export default function Auth({ onAuth }: Props) {
           </Stack>
           <Typography
             sx={{
-              fontFamily: "'Fragment Mono', monospace",
+              fontFamily: MONO,
               fontSize: "0.62rem",
               letterSpacing: "0.12em",
               color: "rgba(255,255,255,.55)",
@@ -141,7 +141,7 @@ export default function Auth({ onAuth }: Props) {
         <Box sx={{ width: "100%", maxWidth: 420 }}>
           <Box sx={{ mb: 4, display: { xs: "block", md: "none" } }}>
             <Typography
-              sx={{ fontFamily: "'Fragment Mono', monospace", fontSize: "1.1rem" }}
+              sx={{ fontFamily: MONO, fontSize: "1.1rem" }}
             >
               edgetape<span style={{ color: EDGE }}>.</span>
             </Typography>
@@ -197,7 +197,7 @@ export default function Auth({ onAuth }: Props) {
           <Typography
             variant="caption"
             color="text.secondary"
-            sx={{ mt: 3, display: "block", textAlign: "center", fontFamily: "'Fragment Mono', monospace", fontSize: "0.62rem", letterSpacing: "0.06em" }}
+            sx={{ mt: 3, display: "block", textAlign: "center", fontFamily: MONO, fontSize: "0.62rem", letterSpacing: "0.06em" }}
           >
             INGRESAR · CREAR CUENTA — TUS CLIPS, TUS CUENTAS
           </Typography>

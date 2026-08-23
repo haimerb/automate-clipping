@@ -398,10 +398,20 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
         job_id: str, body: JobSettings, user: User = Depends(get_current_user)
     ) -> Job:
         job = owned_job(job_id, user.id)
+        was_auto = job.auto_publish
         job.auto_publish = body.auto_publish
         job.auto_publish_platform = body.auto_publish_platform
         job.auto_publish_account = body.auto_publish_account
         store.save_job(job)
+        # Si se activa auto_publish por primera vez y el job ya está listo,
+        # disparar publicación para los clips que ya estaban marcados.
+        if body.auto_publish and not was_auto and job.status == "done":
+            for clip in store.get_clips(job.id):
+                if clip.publish:
+                    enqueue_auto_publish(
+                        job.id, clip.id, str(store.root),
+                        body.auto_publish_platform, body.auto_publish_account,
+                    )
         return job
 
     @app.post("/api/jobs/{job_id}/publish-all", response_model=list[PlatformPost])

@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { Box } from "@mui/material";
 import { formatDuration, formatTimecode, previewUrl, thumbUrl } from "../api";
 import type { Clip } from "../api";
-import { MARK } from "../theme";
+import { MARK, MONO } from "../theme";
 
 interface Props {
   jobId: string;
@@ -90,7 +90,7 @@ export default function ClipPreview({
             position: "absolute",
             bottom: 8,
             left: 8,
-            fontFamily: "'Fragment Mono', monospace",
+            fontFamily: MONO,
             fontSize: "0.62rem",
             background: "rgba(20,22,26,0.78)",
             color: "#fff",
@@ -111,7 +111,7 @@ export default function ClipPreview({
             right: 6,
             background: "rgba(20,22,26,0.78)",
             color: MARK,
-            fontFamily: "'Fragment Mono', monospace",
+            fontFamily: MONO,
             fontSize: "0.56rem",
             px: 0.5,
             py: 0.15,
@@ -130,7 +130,7 @@ export default function ClipPreview({
             right: 8,
             background: "rgba(20,22,26,0.78)",
             color: "#fff",
-            fontFamily: "'Fragment Mono', monospace",
+            fontFamily: MONO,
             fontSize: "0.58rem",
             px: 0.6,
             py: 0.2,

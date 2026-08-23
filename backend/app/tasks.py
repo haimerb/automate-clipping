@@ -37,7 +37,10 @@ celery_app.conf.update(
 
 
 def _store(storage_root: str) -> JobStore:
-    return JobStore(storage_root)
+    # En el worker Docker, EDGETAPE_STORAGE apunta al path correcto del contenedor
+    # y tiene prioridad sobre la ruta que la API del host pasa como argumento.
+    root = os.environ.get("EDGETAPE_STORAGE", storage_root)
+    return JobStore(root)
 
 
 @celery_app.task(name="edgetape.process_job")

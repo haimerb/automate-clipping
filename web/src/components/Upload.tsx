@@ -22,7 +22,7 @@ import UploadFileRoundedIcon from "@mui/icons-material/UploadFileRounded";
 import LinkRoundedIcon from "@mui/icons-material/LinkRounded";
 import { uploadFile, createYoutubeJob, pollJob, listJobs, formatDuration } from "../api";
 import type { Job } from "../api";
-import { EDGE, MARK } from "../theme";
+import { EDGE, INK, MARK, MONO } from "../theme";
 
 interface Props {
   onReady: (job: Job) => void;
@@ -98,7 +98,7 @@ export default function Upload({ onReady, onOpenJob }: Props) {
     : "Procesando…";
 
   return (
-    <Container maxWidth="lg" sx={{ py: { xs: 4, md: 6 } }}>
+    <Container maxWidth="lg" sx={{ py: { xs: 5, md: 7 } }}>
       <Box sx={{ mb: 3 }}>
         <Typography variant="overline" sx={{ display: "block" }}>
           Nueva producción
@@ -183,7 +183,7 @@ export default function Upload({ onReady, onOpenJob }: Props) {
                 <Typography
                   variant="caption"
                   color="text.secondary"
-                  sx={{ fontFamily: "'Fragment Mono', monospace", mt: 0.5, display: "block" }}
+                  sx={{ fontFamily: MONO, mt: 0.5, display: "block" }}
                 >
                   {job.progress}%
                 </Typography>
@@ -221,7 +221,7 @@ export default function Upload({ onReady, onOpenJob }: Props) {
                 <Typography
                   variant="caption"
                   color="text.secondary"
-                  sx={{ fontFamily: "'Fragment Mono', monospace", mt: 0.5, display: "block" }}
+                  sx={{ fontFamily: MONO, mt: 0.5, display: "block" }}
                 >
                   {job.progress}%
                 </Typography>
@@ -289,10 +289,10 @@ export default function Upload({ onReady, onOpenJob }: Props) {
                     >
                       <TableCell sx={{ fontWeight: 600 }}>{j.filename}</TableCell>
                       <TableCell>{j.source === "youtube" ? "YouTube" : "archivo"}</TableCell>
-                      <TableCell align="right" sx={{ fontFamily: "'Fragment Mono', monospace", fontSize: "0.78rem" }}>
+                      <TableCell align="right" sx={{ fontFamily: MONO, fontSize: "0.78rem" }}>
                         {j.clip_count}
                       </TableCell>
-                      <TableCell align="right" sx={{ fontFamily: "'Fragment Mono', monospace", fontSize: "0.78rem" }}>
+                      <TableCell align="right" sx={{ fontFamily: MONO, fontSize: "0.78rem" }}>
                         {j.duration ? formatDuration(j.duration) : "—"}
                       </TableCell>
                       <TableCell sx={{ whiteSpace: "nowrap" }}>
@@ -314,7 +314,7 @@ export default function Upload({ onReady, onOpenJob }: Props) {
                           variant={ready ? "filled" : "outlined"}
                           sx={{
                             bgcolor: ready ? MARK : "transparent",
-                            color: ready ? "#14161A" : undefined,
+                            color: ready ? INK : undefined,
                             borderColor: ready ? MARK : undefined,
                           }}
                         />
