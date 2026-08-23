@@ -18,6 +18,8 @@ class Job(BaseModel):
     clip_count: int = 0
     post_count: int = 0
     auto_publish: bool = False
+    auto_publish_platform: str = "youtube_shorts"
+    auto_publish_account: str | None = None
     created_at: str
 
 
@@ -146,6 +148,8 @@ class ClipPublish(BaseModel):
 
 class JobSettings(BaseModel):
     auto_publish: bool = False
+    auto_publish_platform: str = "youtube_shorts"
+    auto_publish_account: str | None = None
 
 
 class PublishAllRequest(BaseModel):

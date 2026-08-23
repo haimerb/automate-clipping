@@ -66,6 +66,8 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
   const [draftPlatform, setDraftPlatform] = useState<Record<string, string>>({});
   const [draftAccount, setDraftAccount] = useState<Record<string, string>>({});
   const [autoPublish, setAutoPublish] = useState(job.auto_publish);
+  const [autoPublishPlatform, setAutoPublishPlatform] = useState(job.auto_publish_platform || "youtube_shorts");
+  const [autoPublishAccount, setAutoPublishAccount] = useState(job.auto_publish_account || "");
   const [posts, setPosts] = useState<PlatformPost[]>([]);
   const [doneCount, setDoneCount] = useState(0);
 
@@ -96,7 +98,11 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [job.id]);
 
-  useEffect(() => setAutoPublish(job.auto_publish), [job.auto_publish]);
+  useEffect(() => {
+    setAutoPublish(job.auto_publish);
+    setAutoPublishPlatform(job.auto_publish_platform || "youtube_shorts");
+    setAutoPublishAccount(job.auto_publish_account || "");
+  }, [job.auto_publish, job.auto_publish_platform, job.auto_publish_account]);
 
   useEffect(() => {
     localStorage.setItem(DESTS_KEY, JSON.stringify(dests));
@@ -165,11 +171,24 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
     setAutoPublish(next);
     setError(null);
     try {
-      const updated = await patchJobSettings(job.id, next);
+      const updated = await patchJobSettings(job.id, next, autoPublishPlatform, autoPublishAccount || null);
       onJobChange(updated);
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo guardar la configuración");
       setAutoPublish(job.auto_publish);
+    }
+  }
+
+  async function updateAutoPublishTarget(platform: string, account: string) {
+    setAutoPublishPlatform(platform);
+    setAutoPublishAccount(account);
+    if (autoPublish) {
+      try {
+        const updated = await patchJobSettings(job.id, true, platform, account || null);
+        onJobChange(updated);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "No se pudo guardar la configuración");
+      }
     }
   }
 
@@ -304,8 +323,8 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
                     Publicación automática
                   </Typography>
                   <Typography variant="body2" color="text.secondary" sx={{ maxWidth: "56ch" }}>
-                    Al activarla, cada clip que marques en el carrete se exporta y publica solo a
-                    YouTube, sin pasar por esta pantalla.
+                    Al activarla, cada clip que marques en el carrete se exporta y publica
+                    automáticamente al destino que elijas.
                   </Typography>
                 </Box>
                 <FormControlLabel
@@ -326,6 +345,43 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
                   sx={{ m: 0 }}
                 />
               </Stack>
+              {autoPublish && (
+                <Stack
+                  direction={{ xs: "column", sm: "row" }}
+                  spacing={1.5}
+                  sx={{ mt: 2, pt: 2, borderTop: "1px dashed", borderColor: "divider", alignItems: { xs: "stretch", sm: "center" } }}
+                >
+                  <Typography variant="body2" color="text.secondary" sx={{ fontSize: "0.78rem" }}>
+                    Destino:
+                  </Typography>
+                  <Select
+                    size="small"
+                    value={autoPublishPlatform}
+                    onChange={(e) => void updateAutoPublishTarget(e.target.value, autoPublishAccount)}
+                    sx={{ minWidth: 170 }}
+                  >
+                    {Object.entries(PLATFORM_LABELS).map(([value, label]) => (
+                      <MenuItem key={value} value={value}>
+                        {label}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                  <Select
+                    size="small"
+                    value={autoPublishAccount}
+                    onChange={(e) => void updateAutoPublishTarget(autoPublishPlatform, e.target.value)}
+                    sx={{ minWidth: 190 }}
+                  >
+                    <MenuItem value="">— sin cuenta —</MenuItem>
+                    {accountsForPlatform(accounts, autoPublishPlatform).map((a) => (
+                      <MenuItem key={a.id} value={a.name}>
+                        {a.name}
+                        {a.handle ? ` (${a.handle})` : ""}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </Stack>
+              )}
             </Paper>
 
             <Stack spacing={3} sx={{ mt: 3 }}>

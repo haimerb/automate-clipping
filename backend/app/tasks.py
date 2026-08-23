@@ -46,10 +46,13 @@ def process_job(job_id: str, storage_root: str) -> None:
 
 
 @celery_app.task(name="edgetape.auto_publish_clip")
-def auto_publish_clip(job_id: str, clip_id: str, storage_root: str) -> None:
+def auto_publish_clip(
+    job_id: str, clip_id: str, storage_root: str,
+    platform: str = "youtube_shorts", account: str | None = None,
+) -> None:
     from . import publish as pubmod
 
-    asyncio.run(pubmod.auto_publish_clip(_store(storage_root), job_id, clip_id))
+    asyncio.run(pubmod.auto_publish_clip(_store(storage_root), job_id, clip_id, platform, account))
 
 
 def _dispatch(task, *args: object) -> None:
@@ -63,5 +66,8 @@ def enqueue_job(job_id: str, storage_root: str) -> None:
     _dispatch(process_job, job_id, storage_root)
 
 
-def enqueue_auto_publish(job_id: str, clip_id: str, storage_root: str) -> None:
-    _dispatch(auto_publish_clip, job_id, clip_id, storage_root)
+def enqueue_auto_publish(
+    job_id: str, clip_id: str, storage_root: str,
+    platform: str = "youtube_shorts", account: str | None = None,
+) -> None:
+    _dispatch(auto_publish_clip, job_id, clip_id, storage_root, platform, account)
