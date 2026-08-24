@@ -119,6 +119,13 @@ async def publish_one(
             logger.warning("subida a YouTube falló (%s); usando respaldo", exc)
             video = None
         if video:
+            if clip.thumbnail:
+                thumb_path = store.exports_dir(job.id) / clip.thumbnail
+                if thumb_path.exists():
+                    try:
+                        await yt.set_thumbnail(video["id"], str(thumb_path), token, creds)
+                    except Exception:
+                        pass
             return store.create_post(
                 job.id, clip.id,
                 platform=platform,

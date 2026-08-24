@@ -166,8 +166,6 @@ def _parse_metadata(content: str) -> dict:
 
 
 def _heuristic_title(script: str, hint: str) -> str:
-    if hint and len(hint) > 5:
-        return hint[:80]
     words = _content_words(script)
     if not words:
         return "Momento clave"

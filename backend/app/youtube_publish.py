@@ -10,7 +10,7 @@ import httpx
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
-SCOPE = "https://www.googleapis.com/auth/youtube.upload"
+SCOPE = "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.force-ssl"
 DEFAULT_REDIRECT = "http://localhost:8000/api/youtube/callback"
 
 
@@ -176,4 +176,47 @@ async def upload_video(
     """Sube un video a YouTube vía resumable upload. Devuelve {id, url}."""
     return await asyncio.to_thread(
         _upload_sync, path, title, description, refresh_token, creds, privacy, tags or [], client
+    )
+
+
+THUMBNAIL_URL = "https://www.googleapis.com/upload/youtube/v3/thumbnails/set"
+
+
+def _set_thumbnail_sync(
+    video_id: str,
+    thumb_path: str,
+    refresh_token: str,
+    creds: Creds,
+    client: httpx.Client | None = None,
+) -> bool:
+    """Sube una miniatura custom a un video de YouTube ya existente."""
+    token = _access_token(refresh_token, creds, client)
+    own = client is None
+    c = client or httpx.Client(timeout=60.0)
+    try:
+        with open(thumb_path, "rb") as fh:
+            resp = c.post(
+                f"{THUMBNAIL_URL}?videoId={video_id}",
+                headers={"Authorization": f"Bearer {token}"},
+                files={"media": ("thumb.jpg", fh, "image/jpeg")},
+            )
+        resp.raise_for_status()
+        return True
+    except Exception:
+        return False
+    finally:
+        if own:
+            c.close()
+
+
+async def set_thumbnail(
+    video_id: str,
+    thumb_path: str,
+    refresh_token: str,
+    creds: Creds,
+    client: httpx.Client | None = None,
+) -> bool:
+    """Sube miniatura custom a YouTube (async wrapper)."""
+    return await asyncio.to_thread(
+        _set_thumbnail_sync, video_id, thumb_path, refresh_token, creds, client
     )
