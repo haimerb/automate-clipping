@@ -1,10 +1,10 @@
 import { createTheme } from "@mui/material/styles";
 
-export const EDGE = "#1E3A8A";
-export const EDGE_SOFT = "rgba(30,58,138,0.06)";
-export const EDGE_DARK = "#162D6B";
-export const MARK = "#FFC647";
-export const MARK_SOFT = "rgba(255,198,71,0.12)";
+export const EDGE = "#FF0000";
+export const EDGE_SOFT = "rgba(255,0,0,0.06)";
+export const EDGE_DARK = "#CC0000";
+export const MARK = "#FF6B35";
+export const MARK_SOFT = "rgba(255,107,53,0.12)";
 export const SURFACE = "#F1F3F5";
 export const SURFACE_2 = "#E9EDF1";
 export const CARD = "#FFFFFF";
@@ -106,10 +106,10 @@ export const theme = createTheme({
             color: "#fff",
           },
           "&.Mui-selected": {
-            backgroundColor: "rgba(255,198,71,0.12)",
+            backgroundColor: "rgba(255,107,53,0.12)",
             borderLeftColor: MARK,
             color: "#fff",
-            "&:hover": { backgroundColor: "rgba(255,198,71,0.18)" },
+            "&:hover": { backgroundColor: "rgba(255,107,53,0.18)" },
           },
           "&.Mui-disabled": {
             color: "rgba(255,255,255,0.25)",

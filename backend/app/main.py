@@ -113,7 +113,7 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
     sel = selector or build_clip_selector()
     init_db()
 
-    app = FastAPI(title="edgetape", version="0.1.0")
+    app = FastAPI(title="ClipForge", version="0.1.0")
 
     app.add_middleware(
         CORSMiddleware,
@@ -564,7 +564,7 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
         @app.get("/")
         def root() -> dict:
             return {
-                "name": "edgetape",
+                "name": "ClipForge",
                 "docs": "/docs",
                 "hint": "Frontend no construido. Ejecuta 'cd web && npm run build'.",
             }

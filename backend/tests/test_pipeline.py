@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import subprocess
@@ -11,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from app.main import create_app
 from app.media import cut_clip, probe_duration
+from app.processing import run_job
 from app.transcriber import MockTranscriber
 
 pytestmark = pytest.mark.skipif(
@@ -23,9 +25,11 @@ def _wait_job(client: TestClient, job_id: str, headers: dict, timeout: float = 9
     """Espera a que el job termine (lo procesa el backend en segundo plano)."""
     deadline = time.time() + timeout
     while time.time() < deadline:
-        job = client.get(f"/api/jobs/{job_id}", headers=headers).json()
-        if job["status"] in ("done", "failed"):
-            return job
+        resp = client.get(f"/api/jobs/{job_id}", headers=headers)
+        if resp.status_code == 200:
+            job = resp.json()
+            if job.get("status") in ("done", "failed"):
+                return job
         time.sleep(0.2)
     raise AssertionError(f"el job {job_id} no terminó a tiempo")
 
@@ -94,21 +98,32 @@ def test_cut_clip_original_keeps_size(sample_video: Path, tmp_path: Path) -> Non
 def test_full_pipeline_end_to_end(
     sample_video: Path, tmp_path: Path, auth_headers, auth_token
 ) -> None:
+    from app import main as _main_mod
+    from app.storage import JobStore
+
     storage = tmp_path / "storage"
     transcriber = MockTranscriber()
     app = create_app(storage, transcriber)
     client = TestClient(app)
+    store = JobStore(storage)
 
-    with sample_video.open("rb") as fh:
-        resp = client.post(
-            "/api/jobs", files={"file": ("sample.mp4", fh, "video/mp4")}, headers=auth_headers
-        )
-    assert resp.status_code == 202
-    job_id = resp.json()["id"]
+    _orig_enqueue = _main_mod.enqueue_job
+    _main_mod.enqueue_job = lambda *a, **kw: None
+    try:
+        with sample_video.open("rb") as fh:
+            resp = client.post(
+                "/api/jobs", files={"file": ("sample.mp4", fh, "video/mp4")}, headers=auth_headers
+            )
+        assert resp.status_code == 202
+        job_id = resp.json()["id"]
 
-    job = _wait_job(client, job_id, auth_headers)
-    assert job["status"] == "done", job.get("error")
-    assert job["clip_count"] > 0
+        asyncio.run(run_job(job_id, store, transcriber))
+    finally:
+        _main_mod.enqueue_job = _orig_enqueue
+
+    job = store.get_job(job_id)
+    assert job is not None and job.status == "done", job.error if job else "job not found"
+    assert job.clip_count > 0
 
     clips = client.get(f"/api/jobs/{job_id}/clips", headers=auth_headers).json()
     assert clips
@@ -156,28 +171,38 @@ def test_full_pipeline_end_to_end(
 def test_youtube_job_downloads_and_processes(
     sample_video: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, auth_headers
 ) -> None:
+    from app import main as _main_mod
+    from app.storage import JobStore
+
     storage = tmp_path / "storage"
     transcriber = MockTranscriber()
     app = create_app(storage, transcriber)
     client = TestClient(app)
-
-    from app import processing
+    store = JobStore(storage)
 
     async def fake_download(url, dest):
         (dest.parent / "source.mp4").write_bytes(sample_video.read_bytes())
         return str(dest.parent / "source.mp4"), "Mi video de YouTube"
 
-    monkeypatch.setattr(processing, "download_youtube", fake_download)
+    _orig_enqueue = _main_mod.enqueue_job
+    _main_mod.enqueue_job = lambda *a, **kw: None
+    _orig_dl = run_job.__globals__["download_youtube"]
+    run_job.__globals__["download_youtube"] = fake_download
+    try:
+        resp = client.post("/api/jobs/youtube", json={"url": "https://youtu.be/abc123"}, headers=auth_headers)
+        assert resp.status_code == 202
+        job_id = resp.json()["id"]
 
-    resp = client.post("/api/jobs/youtube", json={"url": "https://youtu.be/abc123"}, headers=auth_headers)
-    assert resp.status_code == 202
-    job_id = resp.json()["id"]
+        asyncio.run(run_job(job_id, store, transcriber))
+    finally:
+        run_job.__globals__["download_youtube"] = _orig_dl
+        _main_mod.enqueue_job = _orig_enqueue
 
-    job = _wait_job(client, job_id, auth_headers)
-    assert job["status"] == "done", job.get("error")
-    assert job["source"] == "youtube"
-    assert job["filename"] == "Mi video de YouTube"
-    assert job["clip_count"] > 0
+    job = store.get_job(job_id)
+    assert job is not None and job.status == "done", job.error if job else "job not found"
+    assert job.source == "youtube"
+    assert job.filename == "Mi video de YouTube"
+    assert job.clip_count > 0
 
     clips = client.get(f"/api/jobs/{job_id}/clips", headers=auth_headers).json()
     assert clips

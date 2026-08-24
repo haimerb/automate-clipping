@@ -73,7 +73,7 @@ export default function Accounts() {
     if (window.location.search.includes("youtube=connected")) {
       void refresh();
       window.history.replaceState({}, "", window.location.pathname);
-      setSuccessMsg("YouTube conectado. Ya puedes publicar clips desde edgetape.");
+      setSuccessMsg("YouTube conectado. Ya puedes publicar clips desde ClipForge.");
     } else if (window.location.search.includes("youtube=error")) {
       window.history.replaceState({}, "", window.location.pathname);
       setError("No se pudo conectar YouTube. Revisa las credenciales y el token en la terminal del servidor.");
@@ -427,7 +427,7 @@ export default function Accounts() {
               ) : (
                 <Alert severity="info" sx={{ mt: 3 }}>
                   Por ahora <b>{ACCOUNT_PLATFORM_LABELS[form.platform] ?? form.platform}</b> se
-                  publica con respaldo: edgetape exporta el clip y te deja el enlace directo de
+                  publica con respaldo: ClipForge exporta el clip y te deja el enlace directo de
                   subida con la cuenta atribuida. La publicación automática por API real (OAuth) está{" "}
                   <b>pendiente</b> para TikTok y Facebook.
                 </Alert>

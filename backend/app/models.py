@@ -33,6 +33,9 @@ class Clip(BaseModel):
     line: str
     script: str
     score: float
+    description: str = ""
+    tags: list[str] = []
+    thumbnail: str | None = None
     exported: bool = False
     export_name: str | None = None
     publish: bool = False

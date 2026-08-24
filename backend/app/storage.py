@@ -71,7 +71,13 @@ class JobStore:
         path = self.job_dir(job_id) / "job.json"
         if not path.exists():
             return None
-        return Job.model_validate_json(path.read_text(encoding="utf-8"))
+        try:
+            raw = path.read_text(encoding="utf-8")
+            if not raw.strip():
+                return None
+            return Job.model_validate_json(raw)
+        except Exception:  # noqa: BLE001
+            return None
 
     def save_job(self, job: Job) -> None:
         path = self.job_dir(job.id) / "job.json"
@@ -85,7 +91,13 @@ class JobStore:
         path = self.job_dir(job_id) / "clips.json"
         if not path.exists():
             return []
-        return [Clip.model_validate(c) for c in json.loads(path.read_text(encoding="utf-8"))]
+        try:
+            raw = path.read_text(encoding="utf-8")
+            if not raw.strip():
+                return []
+            return [Clip.model_validate(c) for c in json.loads(raw)]
+        except (json.JSONDecodeError, ValueError):
+            return []
 
     def update_clip(self, job_id: str, clip_id: str, **updates) -> Clip | None:
         clips = self.get_clips(job_id)
@@ -106,7 +118,13 @@ class JobStore:
         path = self._posts_path(job_id)
         if not path.exists():
             return []
-        return [PlatformPost.model_validate(p) for p in json.loads(path.read_text(encoding="utf-8"))]
+        try:
+            raw = path.read_text(encoding="utf-8")
+            if not raw.strip():
+                return []
+            return [PlatformPost.model_validate(p) for p in json.loads(raw)]
+        except (json.JSONDecodeError, ValueError):
+            return []
 
     def save_posts(self, job_id: str, posts: list[PlatformPost]) -> None:
         path = self._posts_path(job_id)

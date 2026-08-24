@@ -325,7 +325,7 @@ export default function Dashboard({ onNewJob, onOpenJob }: Props) {
       <Box sx={{ mt: 5, display: "flex", gap: 1.5, alignItems: "center" }}>
         <Box aria-hidden sx={{ flex: 1, height: 8, borderRadius: 2, background: `repeating-linear-gradient(90deg, transparent 0 6px, ${EDGE} 6px 8px, transparent 8px 14px)`, opacity: 0.5 }} />
         <Typography variant="caption" color="text.secondary" sx={{ fontFamily: MONO, fontSize: "0.6rem", letterSpacing: "0.1em" }}>
-          EDGETAPE · RENDIMIENTO
+          CLIPFORGE · RENDIMIENTO
         </Typography>
         <Box aria-hidden sx={{ flex: 1, height: 8, borderRadius: 2, background: `repeating-linear-gradient(90deg, transparent 0 6px, ${EDGE} 6px 8px, transparent 8px 14px)`, opacity: 0.5 }} />
       </Box>

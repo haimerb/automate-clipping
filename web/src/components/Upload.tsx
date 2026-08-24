@@ -196,7 +196,7 @@ export default function Upload({ onReady, onOpenJob }: Props) {
               Enlace
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 2 }}>
-              Pega una URL de YouTube y edgetape descarga el video automáticamente.
+              Pega una URL de YouTube y ClipForge descarga el video automáticamente.
             </Typography>
             <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
               <TextField

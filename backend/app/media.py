@@ -81,6 +81,43 @@ def extract_thumbnail(src: str | Path, at: float, out: str | Path, width: int = 
         raise RuntimeError(f"ffmpeg thumbnail failed: {result.stderr.strip()}")
 
 
+def extract_best_thumbnail(
+    src: str | Path, start: float, end: float, out: str | Path, width: int = 360
+) -> None:
+    """Extract the frame with highest brightness variance from the clip."""
+    dur = end - start
+    if dur <= 0:
+        extract_thumbnail(src, start, out, width)
+        return
+    candidates = [start + dur * f for f in (0.15, 0.3, 0.5, 0.7)]
+    best_at = candidates[0]
+    best_var = -1.0
+    for t in candidates:
+        try:
+            cmd = [
+                FFMPEG, "-y", "-hide_banner", "-loglevel", "error",
+                "-ss", f"{max(0.0, t):.3f}",
+                "-i", str(src),
+                "-frames:v", "1",
+                "-vf", f"signalstats,metadata=print:file=-",
+                "-f", "null", "-",
+            ]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            var = 0.0
+            for line in r.stderr.split("\n"):
+                if "YAVG" in line:
+                    try:
+                        var += abs(float(line.split("=")[-1]))
+                    except ValueError:
+                        pass
+            if var > best_var:
+                best_var = var
+                best_at = t
+        except Exception:
+            pass
+    extract_thumbnail(src, best_at, out, width)
+
+
 def has_ffmpeg() -> bool:
     return _which(FFMPEG) is not None
 

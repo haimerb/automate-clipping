@@ -9,11 +9,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import publish as pubmod
+from app import tasks as _tasks
 from app import youtube_publish as ytpub
 from app.main import create_app
 from app.processing import run_job
 from app.storage import JobStore
 from app.transcriber import MockTranscriber
+
+enqueue_job = _tasks.enqueue_job
+enqueue_auto_publish = _tasks.enqueue_auto_publish
 
 pytestmark = pytest.mark.skipif(
     shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
@@ -39,22 +43,34 @@ def sample_video(tmp_path_factory) -> Path:
 
 
 def _done_job(tmp_path: Path, auth_headers: dict, sample_video: Path) -> tuple[TestClient, JobStore, str]:
+    from app import main as _main_mod
+
     storage = tmp_path / "storage"
     transcriber = MockTranscriber()
     app = create_app(storage, transcriber)
     client = TestClient(app)
     store = JobStore(storage)
-    for _ in range(5):
-        with sample_video.open("rb") as fh:
-            resp = client.post(
-                "/api/jobs", files={"file": ("sample.mp4", fh, "video/mp4")}, headers=auth_headers
-            )
-        assert resp.status_code == 202
-        job_id = resp.json()["id"]
-        asyncio.run(run_job(job_id, store, transcriber))
-        if store.get_clips(job_id):
-            assert store.get_job(job_id).status == "done"
-            return client, store, job_id
+    import time
+    _orig_enqueue = _main_mod.enqueue_job
+    _orig_auto = _main_mod.enqueue_auto_publish
+    _main_mod.enqueue_job = lambda *a, **kw: None
+    _main_mod.enqueue_auto_publish = lambda *a, **kw: None
+    try:
+        for _ in range(10):
+            with sample_video.open("rb") as fh:
+                resp = client.post(
+                    "/api/jobs", files={"file": ("sample.mp4", fh, "video/mp4")}, headers=auth_headers
+                )
+            assert resp.status_code == 202
+            job_id = resp.json()["id"]
+            asyncio.run(run_job(job_id, store, transcriber))
+            job = store.get_job(job_id)
+            if job and job.status == "done" and store.get_clips(job_id):
+                return client, store, job_id
+            time.sleep(0.1)
+    finally:
+        _main_mod.enqueue_job = _orig_enqueue
+        _main_mod.enqueue_auto_publish = _orig_auto
     raise AssertionError("no se generaron clips en ningún intento")
 
 

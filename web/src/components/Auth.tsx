@@ -77,7 +77,7 @@ export default function Auth({ onAuth }: Props) {
               letterSpacing: "0.02em",
             }}
           >
-            edgetape<span style={{ color: MARK }}>.</span>
+            ClipForge<span style={{ color: MARK }}>.</span>
           </Typography>
         </Box>
 
@@ -143,7 +143,7 @@ export default function Auth({ onAuth }: Props) {
             <Typography
               sx={{ fontFamily: MONO, fontSize: "1.1rem" }}
             >
-              edgetape<span style={{ color: EDGE }}>.</span>
+              ClipForge<span style={{ color: EDGE }}>.</span>
             </Typography>
           </Box>
           <Card sx={{ p: 3.5 }}>

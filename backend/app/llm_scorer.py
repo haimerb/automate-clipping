@@ -8,7 +8,7 @@ from typing import Protocol
 
 import httpx
 
-from .scorer import MAX_LEN, TOP_N, _TOKEN_RE, detect_clips
+from .scorer import TOP_N, _TOKEN_RE, _limits_for, detect_clips
 
 logger = logging.getLogger(__name__)
 
@@ -28,14 +28,20 @@ SYSTEM_PROMPT = (
 class ClipSelector(Protocol):
     name: str
 
-    def select_clips(self, segments: list[dict], duration: float, top_n: int = TOP_N) -> list[dict]: ...
+    def select_clips(
+        self, segments: list[dict], duration: float, top_n: int = TOP_N,
+        platform: str | None = None,
+    ) -> list[dict]: ...
 
 
 class HeuristicSelector:
     name = "heuristic"
 
-    def select_clips(self, segments: list[dict], duration: float, top_n: int = TOP_N) -> list[dict]:
-        return detect_clips(segments, top_n)
+    def select_clips(
+        self, segments: list[dict], duration: float, top_n: int = TOP_N,
+        platform: str | None = None,
+    ) -> list[dict]:
+        return detect_clips(segments, top_n, platform)
 
 
 class LLMClipSelector:
@@ -51,14 +57,17 @@ class LLMClipSelector:
     def name(self) -> str:
         return f"llm-{self.model}"
 
-    def select_clips(self, segments: list[dict], duration: float, top_n: int = TOP_N) -> list[dict]:
+    def select_clips(
+        self, segments: list[dict], duration: float, top_n: int = TOP_N,
+        platform: str | None = None,
+    ) -> list[dict]:
         windows = _build_windows(segments)
         if not windows:
             return []
         prompt = _build_prompt(windows, duration, top_n)
         content = self._complete(prompt)
         selections = _parse_response(content)
-        return _to_clips(selections, windows, top_n)
+        return _to_clips(selections, windows, top_n, platform)
 
     def _complete(self, prompt: str) -> str:
         url = f"{self.base_url}/chat/completions"
@@ -83,13 +92,15 @@ class LLMClipSelector:
                 client.close()
 
 
-def select_clips_safely(selector: ClipSelector, segments: list[dict],
-                        duration: float, top_n: int = TOP_N) -> list[dict]:
+def select_clips_safely(
+    selector: ClipSelector, segments: list[dict], duration: float,
+    top_n: int = TOP_N, platform: str | None = None,
+) -> list[dict]:
     try:
-        return selector.select_clips(segments, duration, top_n)
+        return selector.select_clips(segments, duration, top_n, platform)
     except Exception as exc:  # noqa: BLE001
         logger.warning("selector %s failed (%s); using heuristic", selector.name, exc)
-        return detect_clips(segments, top_n)
+        return detect_clips(segments, top_n, platform)
 
 
 def build_clip_selector() -> ClipSelector:
@@ -162,7 +173,9 @@ def _best_segment(segs: list[dict], quote: str) -> dict:
     return max(segs, key=overlap)
 
 
-def _to_clips(selections: list[dict], windows: list[dict], top_n: int) -> list[dict]:
+def _to_clips(selections: list[dict], windows: list[dict], top_n: int,
+              platform: str | None = None) -> list[dict]:
+    _, MAX_LEN = _limits_for(platform)
     clips: list[dict] = []
     for sel in selections:
         if not isinstance(sel, dict):

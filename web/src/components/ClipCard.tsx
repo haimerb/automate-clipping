@@ -1,9 +1,9 @@
-import { Box, Button, Card, Typography } from "@mui/material";
+import { Box, Button, Card, Chip, Typography } from "@mui/material";
 import BarWave from "./BarWave";
 import ClipPreview from "./ClipPreview";
 import { formatDuration, formatTimecode } from "../api";
 import type { Clip } from "../api";
-import { EDGE, INK, MARK, MONO } from "../theme";
+import { EDGE, INK, MARK, MONO, MUTED } from "../theme";
 
 interface Props {
   jobId: string;
@@ -77,9 +77,34 @@ export default function ClipCard({ jobId, clip, active, onSelect, onTogglePublis
 
       <Box sx={{ borderTop: "1px dashed", borderColor: "divider", pt: 1 }}>
         <Typography variant="body2" color="text.secondary" sx={{ fontSize: "0.82rem" }}>
-          “{clip.line}”
+          "{clip.line}"
         </Typography>
       </Box>
+
+      {clip.description && (
+        <Typography variant="body2" color="text.secondary" sx={{ fontSize: "0.75rem", lineHeight: 1.4, mt: -0.5 }}>
+          {clip.description.length > 150 ? clip.description.slice(0, 150) + "…" : clip.description}
+        </Typography>
+      )}
+
+      {clip.tags.length > 0 && (
+        <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5 }}>
+          {clip.tags.slice(0, 6).map((tag) => (
+            <Chip
+              key={tag}
+              label={`#${tag}`}
+              size="small"
+              sx={{
+                fontSize: "0.58rem",
+                height: 20,
+                fontFamily: MONO,
+                color: MUTED,
+                bgcolor: "action.hover",
+              }}
+            />
+          ))}
+        </Box>
+      )}
 
       <Button
         size="small"
