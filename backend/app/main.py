@@ -437,7 +437,7 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
             {
                 "id": c.id,
                 "script": c.script,
-                "title": c.title,
+                "title": "",  # hint vacío para forzar generación nueva
                 "line": c.line,
                 "duration": c.duration,
                 "start": c.start,
