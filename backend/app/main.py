@@ -391,7 +391,30 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
     @app.get("/api/jobs/{job_id}/clips", response_model=list[Clip])
     def list_clips(job_id: str, user: User = Depends(get_current_user)) -> list[Clip]:
         job = owned_job(job_id, user.id)
-        return store.get_clips(job.id)
+        clips = store.get_clips(job.id)
+        needs_update = any(not c.description for c in clips)
+        if needs_update and clips and job.status == "done":
+            from .processing import _extract_thumbnails, _infer_platform
+            from .viral import build_metadata_generator, generate_clip_metadata
+            gen = build_metadata_generator()
+            platform = _infer_platform(job.duration or 0.0, job.source_url)
+            found = [
+                {"id": c.id, "script": c.script, "title": "", "line": c.line,
+                 "duration": c.duration, "start": c.start, "end": c.end, "score": c.score}
+                for c in clips
+            ]
+            found = generate_clip_metadata(gen, found, platform)
+            for orig, updated in zip(clips, found):
+                orig.title = updated.get("title", orig.title)
+                orig.description = updated.get("description", "")
+                orig.tags = updated.get("tags", [])
+            source = store.source_path(job.id)
+            if source.exists():
+                exports = store.exports_dir(job.id)
+                exports.mkdir(parents=True, exist_ok=True)
+                _extract_thumbnails(source, clips, exports)
+            store.save_clips(job.id, clips)
+        return clips
 
     @app.patch("/api/jobs/{job_id}", response_model=Job)
     def patch_job_settings(

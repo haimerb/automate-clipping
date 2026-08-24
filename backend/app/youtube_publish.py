@@ -190,19 +190,27 @@ def _set_thumbnail_sync(
     client: httpx.Client | None = None,
 ) -> bool:
     """Sube una miniatura custom a un video de YouTube ya existente."""
-    token = _access_token(refresh_token, creds, client)
     own = client is None
     c = client or httpx.Client(timeout=60.0)
     try:
+        token = _access_token(refresh_token, creds, c)
         with open(thumb_path, "rb") as fh:
             resp = c.post(
                 f"{THUMBNAIL_URL}?videoId={video_id}",
                 headers={"Authorization": f"Bearer {token}"},
                 files={"media": ("thumb.jpg", fh, "image/jpeg")},
             )
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            import logging
+            logging.getLogger(__name__).warning(
+                "YouTube thumbnail upload failed %s: %s",
+                resp.status_code, resp.text[:300],
+            )
+            return False
         return True
-    except Exception:
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("YouTube thumbnail upload error: %s", exc)
         return False
     finally:
         if own:
