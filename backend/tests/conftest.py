@@ -14,6 +14,8 @@ os.environ["DATABASE_URL"] = os.environ["EDGETAPE_DATABASE_URL"]
 os.environ["EDGETAPE_JWT_SECRET"] = "edgetape-test-secret"
 # jobs en segundo plano sin Redis: corre la tarea en un hilo local
 os.environ.setdefault("EDGETAPE_ASYNC_BACKEND", "inproc")
+# Desactivar Ollama en tests para que usen heurístico (rápido)
+os.environ["EDGETAPE_OLLAMA_URL"] = "http://127.0.0.1:1"
 
 from app.main import create_app  # noqa: E402
 

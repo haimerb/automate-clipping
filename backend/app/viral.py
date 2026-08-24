@@ -44,6 +44,9 @@ _CTA_OPTIONS = [
     "Guarda este video para después 🔖",
 ]
 
+OLLAMA_URL = os.environ.get("EDGETAPE_OLLAMA_URL", "http://localhost:11434")
+OLLAMA_MODEL = os.environ.get("EDGETAPE_OLLAMA_MODEL", "qwen2.5-coder:7b")
+
 
 class MetadataGenerator(Protocol):
     name: str
@@ -51,6 +54,41 @@ class MetadataGenerator(Protocol):
     def generate(
         self, script: str, title_hint: str, duration: float, platform: str
     ) -> dict: ...
+
+
+class OllamaMetadataGenerator:
+    """Genera metadata viral usando Ollama local (sin API key)."""
+
+    def __init__(self, model: str | None = None, base_url: str | None = None) -> None:
+        self.model = model or OLLAMA_MODEL
+        self.base_url = (base_url or OLLAMA_URL).rstrip("/")
+
+    @property
+    def name(self) -> str:
+        return f"ollama-metadata-{self.model}"
+
+    def generate(
+        self, script: str, title_hint: str, duration: float, platform: str
+    ) -> dict:
+        prompt = _build_metadata_prompt(script, title_hint, duration, platform)
+        content = self._complete(prompt)
+        return _parse_metadata(content)
+
+    def _complete(self, prompt: str) -> str:
+        url = f"{self.base_url}/api/chat"
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": VIRAL_SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
+            "stream": False,
+            "options": {"temperature": 0.7},
+        }
+        with httpx.Client(timeout=120.0) as client:
+            resp = client.post(url, json=payload)
+            resp.raise_for_status()
+            return resp.json()["message"]["content"]
 
 
 class LLMetadataGenerator:
@@ -115,12 +153,26 @@ class HeuristicMetadataGenerator:
 
 
 def build_metadata_generator() -> MetadataGenerator:
+    # 1. Ollama local (sin API key)
+    try:
+        with httpx.Client(timeout=3.0) as c:
+            resp = c.get(f"{OLLAMA_URL}/api/tags")
+            if resp.status_code == 200:
+                models = [m["name"] for m in resp.json().get("models", [])]
+                if any(OLLAMA_MODEL in m for m in models):
+                    return OllamaMetadataGenerator()
+    except Exception:
+        pass
+
+    # 2. API remota (OpenAI, Groq, etc.)
     if (
         os.environ.get("EDGETAPE_LLM_MODEL")
         or os.environ.get("EDGETAPE_LLM_API_KEY")
         or os.environ.get("EDGETAPE_LLM_BASE_URL")
     ):
         return LLMetadataGenerator()
+
+    # 3. Fallback heurístico
     return HeuristicMetadataGenerator()
 
 
@@ -159,12 +211,12 @@ def _build_metadata_prompt(script: str, title_hint: str, duration: float, platfo
     max_title = 60 if "short" in platform or "tiktok" in platform or "reels" in platform else 100
     return (
         f"Plataforma objetivo: {pname}\n"
-        f"Duración del clip: {duration:.0f} segundos\n"
-        f"Sugerencia de título: {title_hint}\n\n"
+        f"Duración del clip: {duration:.0f} segundos\n\n"
         f"Transcripción del clip:\n{script[:2000]}\n\n"
         f"Instrucciones:\n"
         f"1. TITLE: Título gancho optimizado para {pname}, máx {max_title} caracteres. "
-        f"Usa ganchos emocionales, números, preguntas o promesas de valor.\n"
+        f"Usa ganchos emocionales, números, preguntas o promesas de valor. "
+        f"NO repitas la transcripción. Sé CREATIVO.\n"
         f"2. DESCRIPTION: Descripción ORIGINAL de 2-3 oraciones que resuma de qué trata "
         f"el video, destaque el momento clave o la enseñanza, incluya un call-to-action "
         f"(suscríbete, comenta, comparte) y 2-3 emojis. NO repitas la transcripción.\n"
