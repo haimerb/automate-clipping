@@ -324,6 +324,10 @@ export function exportClip(jobId: string, clipId: string): Promise<Clip> {
   return request<Clip>(`/api/jobs/${jobId}/clips/${clipId}/export`, { method: "POST" });
 }
 
+export function reprocessJob(jobId: string): Promise<Clip[]> {
+  return request<Clip[]>(`/api/jobs/${jobId}/reprocess`, { method: "POST" });
+}
+
 function withToken(url: string): string {
   const token = getToken();
   return token ? `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}` : url;

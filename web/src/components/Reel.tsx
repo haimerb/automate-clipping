@@ -10,6 +10,7 @@ import {
   exportClip,
   formatDuration,
   formatTimecode,
+  reprocessJob,
   setClipPublish,
 } from "../api";
 import type { Clip, Job } from "../api";
@@ -41,6 +42,7 @@ export default function Reel({
 }: Props) {
   const [selected, setSelected] = useState<Clip | null>(clips[0] ?? null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [reprocessing, setReprocessing] = useState(false);
   const [errorDialog, setErrorDialog] = useState<string | null>(null);
 
   const selectedClip = selected ? clips.find((c) => c.id === selected.id) ?? selected : null;
@@ -69,6 +71,18 @@ export default function Reel({
       setErrorDialog(err instanceof Error ? err.message : "No se pudo marcar el clip");
     } finally {
       setBusy(null);
+    }
+  }
+
+  async function onReprocess() {
+    setReprocessing(true);
+    try {
+      const updated = await reprocessJob(job.id);
+      for (const c of updated) onUpdateClip(c);
+    } catch (err) {
+      setErrorDialog(err instanceof Error ? err.message : "No se pudo regenerar la metadata");
+    } finally {
+      setReprocessing(false);
     }
   }
 
@@ -116,6 +130,14 @@ export default function Reel({
         >
           <Button variant="outlined" onClick={onDashboard} sx={{ alignSelf: { xs: "stretch", sm: "flex-start" } }}>
             Ver panel de ganancias
+          </Button>
+          <Button
+            variant="outlined"
+            onClick={() => void onReprocess()}
+            disabled={reprocessing}
+            sx={{ alignSelf: { xs: "stretch", sm: "flex-start" } }}
+          >
+            {reprocessing ? "Regenerando…" : "Regenerar metadata"}
           </Button>
           <Button
             variant="contained"
@@ -272,6 +294,13 @@ export default function Reel({
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ justifyContent: "center" }}>
           <Button variant="contained" onClick={onGoPublish} disabled={toPublish === 0}>
             {toPublish === 0 ? "Marca clips para publicar" : `Publicar ${toPublish} clips`}
+          </Button>
+          <Button
+            variant="outlined"
+            onClick={() => void onReprocess()}
+            disabled={reprocessing}
+          >
+            {reprocessing ? "Regenerando…" : "Regenerar metadata"}
           </Button>
           <Button variant="outlined" onClick={onDashboard}>
             Ver panel de ganancias

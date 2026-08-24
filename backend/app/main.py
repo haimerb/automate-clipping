@@ -414,6 +414,54 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
                     )
         return job
 
+    @app.post("/api/jobs/{job_id}/reprocess", response_model=list[Clip])
+    async def reprocess_job_clips(
+        job_id: str, user: User = Depends(get_current_user)
+    ) -> list[Clip]:
+        """Regenera metadata viral (título, descripción, tags) y miniaturas
+        para los clips existentes de un job terminado."""
+        from .media import extract_best_thumbnail
+        from .processing import _extract_thumbnails, _infer_platform
+        from .viral import build_metadata_generator, generate_clip_metadata
+
+        job = owned_job(job_id, user.id)
+        if job.status != "done":
+            raise HTTPException(status_code=409, detail="Solo se pueden reprocesar jobs terminados")
+        clips = store.get_clips(job.id)
+        if not clips:
+            raise HTTPException(status_code=404, detail="El job no tiene clips")
+
+        metadata_gen = build_metadata_generator()
+        platform = _infer_platform(job.duration or 0.0, job.source_url)
+        found = [
+            {
+                "id": c.id,
+                "script": c.script,
+                "title": c.title,
+                "line": c.line,
+                "duration": c.duration,
+                "start": c.start,
+                "end": c.end,
+                "score": c.score,
+            }
+            for c in clips
+        ]
+        found = generate_clip_metadata(metadata_gen, found, platform)
+
+        for orig, updated in zip(clips, found):
+            orig.title = updated.get("title", orig.title)
+            orig.description = updated.get("description", "")
+            orig.tags = updated.get("tags", [])
+
+        source = store.source_path(job.id)
+        if source.exists():
+            exports = store.exports_dir(job.id)
+            exports.mkdir(parents=True, exist_ok=True)
+            _extract_thumbnails(source, clips, exports)
+
+        store.save_clips(job.id, clips)
+        return clips
+
     @app.post("/api/jobs/{job_id}/publish-all", response_model=list[PlatformPost])
     async def publish_all(
         job_id: str, body: PublishAllRequest, user: User = Depends(get_current_user)
