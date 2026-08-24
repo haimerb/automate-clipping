@@ -143,10 +143,11 @@ async def publish_one(
         if video:
             thumb_path = _resolve_thumbnail(store, job, clip)
             if thumb_path is not None:
-                try:
-                    await yt.set_thumbnail(video["id"], str(thumb_path), token, creds)
-                except Exception:
-                    pass
+                ok = await yt.set_thumbnail(video["id"], str(thumb_path), token, creds)
+                if ok:
+                    logger.info("miniatura subida a YouTube para %s", video["id"])
+                else:
+                    logger.warning("no se pudo subir miniatura a YouTube para %s", video["id"])
             return store.create_post(
                 job.id, clip.id,
                 platform=platform,
