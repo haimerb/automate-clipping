@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 VIRAL_SYSTEM = (
     "Eres un experto en marketing de contenido viral para YouTube, TikTok y redes sociales. "
     "Generas títulos, descripciones y tags que maximizan views, engagement y shares. "
+    "SIEMPRE responde en español. NUNCA uses inglés. "
     "La descripción debe ser ORIGINAL: analiza el contenido del clip y escribe una descripción "
     "que resuma de qué trata el video, destaque el momento clave, incluya un call-to-action "
     "y emojis relevantes. NUNCA repitas la transcripción tal cual. "
@@ -223,7 +224,7 @@ def _build_metadata_prompt(script: str, title_hint: str, duration: float, platfo
         f"Plataforma objetivo: {pname}\n"
         f"Duración del clip: {duration:.0f} segundos\n\n"
         f"Transcripción del clip:\n{script[:2000]}\n\n"
-        f"Instrucciones:\n"
+        f"Instrucciones (IMPORTANTE: responde SIEMPRE en español):\n"
         f"1. TITLE: Título gancho optimizado para {pname}, máx {max_title} caracteres. "
         f"Usa ganchos emocionales, números, preguntas o promesas de valor. "
         f"NO repitas la transcripción. Sé CREATIVO.\n"
