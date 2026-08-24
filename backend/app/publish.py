@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import logging
+import re
+import tempfile
+from pathlib import Path
 
 from sqlalchemy import select
 
 from . import youtube_publish as yt
 from .db import SessionLocal
+from .media import extract_best_thumbnail
 from .models import Clip, Job, PlatformPost
 from .processing import export_clip
 from .storage import JobStore
@@ -37,6 +41,24 @@ PLATFORM_ACCOUNT_MAP = {
 }
 
 PUBLISHED_STATUSES = {"publicado"}
+
+
+def _resolve_thumbnail(store: JobStore, job: Job, clip: Clip) -> Path | None:
+    """Devuelve la ruta a la miniatura del clip. Si no existe, la genera on-the-fly."""
+    if clip.thumbnail:
+        p = store.exports_dir(job.id) / clip.thumbnail
+        if p.exists():
+            return p
+    source = store.source_path(job.id)
+    if not source.exists():
+        return None
+    try:
+        out = store.exports_dir(job.id) / f"{clip.id}_thumb.jpg"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        extract_best_thumbnail(source, clip.start, clip.end, out)
+        return out if out.exists() else None
+    except Exception:
+        return None
 
 
 def _job_description(clip: Clip) -> str:
@@ -119,13 +141,12 @@ async def publish_one(
             logger.warning("subida a YouTube falló (%s); usando respaldo", exc)
             video = None
         if video:
-            if clip.thumbnail:
-                thumb_path = store.exports_dir(job.id) / clip.thumbnail
-                if thumb_path.exists():
-                    try:
-                        await yt.set_thumbnail(video["id"], str(thumb_path), token, creds)
-                    except Exception:
-                        pass
+            thumb_path = _resolve_thumbnail(store, job, clip)
+            if thumb_path is not None:
+                try:
+                    await yt.set_thumbnail(video["id"], str(thumb_path), token, creds)
+                except Exception:
+                    pass
             return store.create_post(
                 job.id, clip.id,
                 platform=platform,
