@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import re
 from typing import Protocol
 
@@ -20,6 +21,28 @@ VIRAL_SYSTEM = (
     "y emojis relevantes. NUNCA repitas la transcripción tal cual. "
     "Respondes SOLO con JSON válido, sin texto adicional."
 )
+
+_TITLE_PATTERNS = [
+    "{topic}",
+    "Lo que nadie te cuenta sobre {topic}",
+    "Esto cambia todo lo que sabías de {topic}",
+    "La verdad que nadie dice sobre {topic}",
+    "{topic} — la lección que nadie enseña",
+    "No vas a creer lo que descubrí sobre {topic}",
+    "El error más grande con {topic}",
+    "Mira lo que pasó con {topic}",
+    "{topic} 🔥 esto es lo que importa",
+    "La razón por la que {topic} falla",
+]
+
+_CTA_OPTIONS = [
+    "Suscríbete para más contenido como este 🔔",
+    "Déjame tu opinión en los comentarios 👇",
+    "Comparte si te sirvió 🔥",
+    "Dale like si te identificas ❤️",
+    "¿Tú qué opinas? Escríbeme abajo 💬",
+    "Guarda este video para después 🔖",
+]
 
 
 class MetadataGenerator(Protocol):
@@ -169,21 +192,25 @@ def _heuristic_title(script: str, hint: str) -> str:
     words = _content_words(script)
     if not words:
         return "Momento clave"
-    title = " ".join(words[:8])
-    return title[:1].upper() + title[1:]
+    topic = " ".join(words[:5])
+    pattern = random.choice(_TITLE_PATTERNS)
+    title = pattern.format(topic=topic)
+    if len(title) > 80:
+        title = title[:80].rsplit(" ", 1)[0]
+    return title
 
 
 def _heuristic_description(script: str, duration: float) -> str:
     words = _content_words(script)
     if not words:
         return f"Clip de {duration:.0f}s #shorts #clip #viral"
-    topic = " ".join(words[:10])
     sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", script) if s.strip()]
-    hook = sentences[0][:120] if sentences else topic
+    hook = sentences[0][:150] if sentences else " ".join(words[:12])
+    cta = random.choice(_CTA_OPTIONS)
     return (
-        f"{hook}\n\n"
+        f"🔥 {hook}\n\n"
         f"Momento clave de {duration:.0f}s que no te puedes perder.\n"
-        f"👇 Suscríbete para más clips virales\n\n"
+        f"{cta}\n\n"
         f"#shorts #clip #viral #trending"
     )
 
