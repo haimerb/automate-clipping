@@ -16,6 +16,10 @@ os.environ["EDGETAPE_JWT_SECRET"] = "edgetape-test-secret"
 os.environ.setdefault("EDGETAPE_ASYNC_BACKEND", "inproc")
 # Desactivar Ollama en tests para que usen heurístico (rápido)
 os.environ["EDGETAPE_OLLAMA_URL"] = "http://127.0.0.1:1"
+# Desactivar LLM remoto (Groq/OpenAI) en tests para que usen heurístico
+os.environ["EDGETAPE_LLM_API_KEY"] = ""
+os.environ["EDGETAPE_LLM_BASE_URL"] = ""
+os.environ["EDGETAPE_LLM_MODEL"] = ""
 
 from app.main import create_app  # noqa: E402
 

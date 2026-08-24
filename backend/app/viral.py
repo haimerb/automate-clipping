@@ -7,6 +7,8 @@ import random
 import re
 from typing import Protocol
 
+import time
+
 import httpx
 
 from .scorer import _content_words
@@ -132,7 +134,15 @@ class LLMetadataGenerator:
         }
         client = self._client or httpx.Client(timeout=60.0)
         try:
-            resp = client.post(url, json=payload, headers=headers)
+            for attempt in range(4):
+                resp = client.post(url, json=payload, headers=headers)
+                if resp.status_code == 429:
+                    wait = 2 ** attempt + random.random()
+                    logger.warning("Groq 429 — retry %d in %.1fs", attempt + 1, wait)
+                    time.sleep(wait)
+                    continue
+                resp.raise_for_status()
+                return resp.json()["choices"][0]["message"]["content"]
             resp.raise_for_status()
             return resp.json()["choices"][0]["message"]["content"]
         finally:
@@ -153,7 +163,15 @@ class HeuristicMetadataGenerator:
 
 
 def build_metadata_generator() -> MetadataGenerator:
-    # 1. Ollama local (sin API key)
+    # 1. API remota (OpenAI, Groq, etc.) — tiene prioridad si hay key
+    if (
+        os.environ.get("EDGETAPE_LLM_MODEL")
+        or os.environ.get("EDGETAPE_LLM_API_KEY")
+        or os.environ.get("EDGETAPE_LLM_BASE_URL")
+    ):
+        return LLMetadataGenerator()
+
+    # 2. Ollama local (sin API key)
     try:
         with httpx.Client(timeout=3.0) as c:
             resp = c.get(f"{OLLAMA_URL}/api/tags")
@@ -163,14 +181,6 @@ def build_metadata_generator() -> MetadataGenerator:
                     return OllamaMetadataGenerator()
     except Exception:
         pass
-
-    # 2. API remota (OpenAI, Groq, etc.)
-    if (
-        os.environ.get("EDGETAPE_LLM_MODEL")
-        or os.environ.get("EDGETAPE_LLM_API_KEY")
-        or os.environ.get("EDGETAPE_LLM_BASE_URL")
-    ):
-        return LLMetadataGenerator()
 
     # 3. Fallback heurístico
     return HeuristicMetadataGenerator()
@@ -227,7 +237,8 @@ def _build_metadata_prompt(script: str, title_hint: str, duration: float, platfo
 
 
 def _parse_metadata(content: str) -> dict:
-    match = re.search(r"\{[\s\S]*\}", content)
+    cleaned = re.sub(r"<think>[\s\S]*?</think>", "", content).strip()
+    match = re.search(r"\{[\s\S]*\}", cleaned)
     if not match:
         raise ValueError("no JSON object found in LLM response")
     data = json.loads(match.group(0))
