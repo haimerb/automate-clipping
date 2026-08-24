@@ -32,7 +32,7 @@ import Auth from "./components/Auth";
 import ConfirmDialog from "./components/ConfirmDialog";
 import { getClips, getJob, getMe, getToken, setToken } from "./api";
 import type { Clip, Job, User } from "./api";
-import { CARD, INK, MARK, MONO, SIDEBAR_WIDTH } from "./theme";
+import { CARD, EDGE, INK, MARK, MONO, SIDEBAR_WIDTH } from "./theme";
 
 type Phase = "upload" | "reel" | "publish" | "generate" | "accounts" | "dashboard";
 
@@ -97,11 +97,11 @@ function Brand() {
           width: 32,
           height: 32,
           borderRadius: 1.5,
-          background: `linear-gradient(135deg, ${MARK} 0%, #F59E0B 100%)`,
+          background: `linear-gradient(135deg, ${EDGE} 0%, ${MARK} 100%)`,
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          boxShadow: "0 2px 8px rgba(255,198,71,0.3)",
+          boxShadow: `0 2px 8px rgba(255,0,0,0.3)`,
         }}
       >
         <Typography
@@ -109,11 +109,11 @@ function Brand() {
             fontFamily: MONO,
             fontSize: "0.9rem",
             fontWeight: 700,
-            color: INK,
+            color: "#fff",
             lineHeight: 1,
           }}
         >
-          e
+          ▶
         </Typography>
       </Box>
       <Box>
@@ -127,7 +127,7 @@ function Brand() {
             lineHeight: 1.2,
           }}
         >
-          edgetape
+          ClipForge
         </Typography>
         <Typography
           sx={{
@@ -542,7 +542,7 @@ export default function App() {
         >
           <Stack direction="row" spacing={2} sx={{ alignItems: "center", flexWrap: "wrap" }}>
             <Typography sx={{ fontFamily: MONO, fontSize: "0.68rem" }}>
-              edgetape<span style={{ color: MARK }}>.</span>
+              ClipForge<span style={{ color: MARK }}>.</span>
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ ml: "auto", fontSize: "0.72rem" }}>
               Grabaciones largas → los momentos que importan.

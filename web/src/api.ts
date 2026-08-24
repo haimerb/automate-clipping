@@ -28,6 +28,9 @@ export interface Clip {
   line: string;
   script: string;
   score: number;
+  description: string;
+  tags: string[];
+  thumbnail: string | null;
   exported: boolean;
   export_name: string | null;
   publish: boolean;

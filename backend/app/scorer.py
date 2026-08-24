@@ -38,9 +38,21 @@ HOOK_WORDS = {
     "nadie", "nada", "todo", "todos",
 }
 
-MAX_LEN = 150.0
-MIN_LEN = 6.0
 TOP_N = 10
+MIN_LEN = 10.0
+
+FORMAT_LIMITS: dict[str, tuple[float, float]] = {
+    "youtube_shorts": (10.0, 60.0),
+    "tiktok": (10.0, 60.0),
+    "facebook_reels": (10.0, 60.0),
+    "instagram_reels": (10.0, 60.0),
+    "youtube": (10.0, 180.0),
+    "otros": (10.0, 120.0),
+}
+
+
+def _limits_for(platform: str | None) -> tuple[float, float]:
+    return FORMAT_LIMITS.get(platform or "", (6.0, 120.0))
 
 _TOKEN_RE = re.compile(r"[^\W\d_]+")
 
@@ -58,10 +70,14 @@ def _content_words(text: str) -> list[str]:
     return [t for t in _tokenize(text) if t not in STOPWORDS and t not in FILLERS and len(t) > 2]
 
 
-def detect_clips(segments: list[dict], top_n: int = TOP_N) -> list[dict]:
+def detect_clips(
+    segments: list[dict], top_n: int = TOP_N, platform: str | None = None
+) -> list[dict]:
     segs = [s for s in segments if s.get("text") and s.get("end", 0) > s.get("start", 0)]
     if not segs:
         return []
+
+    MIN_LEN, MAX_LEN = _limits_for(platform)
 
     df: Counter = Counter()
     for s in segs:
@@ -118,7 +134,7 @@ def detect_clips(segments: list[dict], top_n: int = TOP_N) -> list[dict]:
         gap = s["start"] - open_clip["end"]
         too_long = (open_clip["end"] - open_clip["start"]) > MAX_LEN
         weak = sc < extend_thresh
-        if gap > 4.0 or (weak and too_long):
+        if gap > 5.0 or (weak and too_long):
             close_clip()
             content = set(_content_words(s["text"]))
             has_hook = bool(content & HOOK_WORDS)

@@ -1,4 +1,4 @@
-"""edgetape backend.
+"""ClipForge backend.
 
 Carga el archivo .env (raíz del repo o backend/) ANTES de importar cualquier
 módulo de la app, para que db/auth lean las variables de entorno a tiempo.

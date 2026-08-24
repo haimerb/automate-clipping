@@ -40,11 +40,11 @@ PUBLISHED_STATUSES = {"publicado"}
 
 
 def _job_description(clip: Clip) -> str:
+    if clip.description:
+        return clip.description
     text = clip.script.strip() or clip.line.strip()
-    return (
-        f"Clip extraído con edgetape.\n\n{text}\n\n"
-        "#shorts #clip #edicion"
-    )
+    tags = " ".join(f"#{t}" for t in clip.tags[:8]) if clip.tags else "#shorts #clip #viral"
+    return f"{text[:300]}\n\n{tags}"
 
 
 def _platform_account(
@@ -112,7 +112,8 @@ async def publish_one(
     if is_youtube and token and _is_refresh_token(token) and creds is not None:
         try:
             video = await yt.upload_video(
-                str(path), clip.title, _job_description(clip), token, creds
+                str(path), clip.title, _job_description(clip), token, creds,
+                tags=clip.tags[:15] if clip.tags else None,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("subida a YouTube falló (%s); usando respaldo", exc)

@@ -375,35 +375,47 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
                   spacing={1.5}
                   sx={{ mt: 2, pt: 2, borderTop: "1px dashed", borderColor: "divider", alignItems: { xs: "stretch", sm: "center" } }}
                 >
-                  <Typography variant="body2" color="text.secondary" sx={{ fontSize: "0.78rem" }}>
-                    Destino:
-                  </Typography>
-                  <Select
-                    size="small"
-                    value={autoPublishPlatform}
-                    onChange={(e) => void updateAutoPublishTarget(e.target.value, autoPublishAccount)}
-                    sx={{ minWidth: 170 }}
-                  >
-                    {Object.entries(PLATFORM_LABELS).map(([value, label]) => (
-                      <MenuItem key={value} value={value}>
-                        {label}
-                      </MenuItem>
-                    ))}
-                  </Select>
-                  <Select
-                    size="small"
-                    value={autoPublishAccount}
-                    onChange={(e) => void updateAutoPublishTarget(autoPublishPlatform, e.target.value)}
-                    sx={{ minWidth: 190 }}
-                  >
-                    <MenuItem value="">— sin cuenta —</MenuItem>
-                    {accountsForPlatform(accounts, autoPublishPlatform).map((a) => (
-                      <MenuItem key={a.id} value={a.name}>
-                        {a.name}
-                        {a.handle ? ` (${a.handle})` : ""}
-                      </MenuItem>
-                    ))}
-                  </Select>
+                  <Box sx={{ minWidth: 80 }}>
+                    <Typography variant="body2" color="text.secondary" sx={{ fontSize: "0.72rem", fontWeight: 600 }}>
+                      Plataforma
+                    </Typography>
+                    <Select
+                      size="small"
+                      value={autoPublishPlatform}
+                      onChange={(e) => void updateAutoPublishTarget(e.target.value, autoPublishAccount)}
+                      sx={{ minWidth: 170, mt: 0.25 }}
+                    >
+                      {Object.entries(PLATFORM_LABELS).map(([value, label]) => (
+                        <MenuItem key={value} value={value}>
+                          {label}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </Box>
+                  <Box sx={{ minWidth: 190 }}>
+                    <Typography variant="body2" color="text.secondary" sx={{ fontSize: "0.72rem", fontWeight: 600 }}>
+                      Canal de publicación
+                    </Typography>
+                    <Select
+                      size="small"
+                      value={autoPublishAccount}
+                      onChange={(e) => void updateAutoPublishTarget(autoPublishPlatform, e.target.value)}
+                      sx={{ minWidth: 190, mt: 0.25 }}
+                    >
+                      <MenuItem value="">— sin canal —</MenuItem>
+                      {accountsForPlatform(accounts, autoPublishPlatform).map((a) => (
+                        <MenuItem key={a.id} value={a.name}>
+                          {a.name}
+                          {a.handle ? ` (${a.handle})` : ""}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                    {accountsForPlatform(accounts, autoPublishPlatform).length === 0 && (
+                      <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: "block", fontSize: "0.68rem" }}>
+                        No hay canales vinculados para esta plataforma. Ve a CUENTAS para vincular uno.
+                      </Typography>
+                    )}
+                  </Box>
                 </Stack>
               )}
             </Paper>
