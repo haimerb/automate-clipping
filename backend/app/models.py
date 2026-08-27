@@ -36,9 +36,12 @@ class Clip(BaseModel):
     description: str = ""
     tags: list[str] = []
     thumbnail: str | None = None
+    thumbnails: list[str] = []
+    thumbnail_index: int = 0
     exported: bool = False
     export_name: str | None = None
     publish: bool = False
+    destinations: list[dict] = []
 
 
 PLATFORMS = [
@@ -186,3 +189,29 @@ class GenerateRequest(BaseModel):
     voice: str = "es_mx_female"
     auto_publish: bool = False
     account_id: str | None = None
+
+
+class MetadataUpdate(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    tags: list[str] | None = None
+
+
+class ThumbnailSelect(BaseModel):
+    thumbnail_index: int
+
+
+class ClipUpdate(BaseModel):
+    publish: bool | None = None
+    thumbnail_index: int | None = None
+    destinations: list[dict] | None = None
+    title: str | None = None
+    description: str | None = None
+    tags: list[str] | None = None
+
+
+class PublishResult(BaseModel):
+    clip_id: str
+    status: str  # "ok" | "error" | "skipped"
+    post: PlatformPost | None = None
+    error: str | None = None

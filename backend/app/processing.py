@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from .llm_scorer import build_clip_selector, select_clips_safely
 from .media import cut_clip, extract_best_thumbnail, extract_thumbnail, probe_duration
@@ -169,14 +172,26 @@ async def run_job(job_id: str, store: JobStore, transcriber, selector=None) -> N
             job.progress = 100
         else:
             segments = await asyncio.to_thread(transcriber.transcribe, str(source), duration)
+            logger.info("transcribed %d segments, duration=%.1fs", len(segments), duration)
 
             job.progress = 60
             store.save_job(job)
             found = select_clips_safely(selector, segments, duration, TOP_N, platform)
+            logger.info("found %d clips from selector %s", len(found), selector.name)
+            for c in found:
+                logger.info("  clip [%s-%s] script_len=%d title=%s",
+                            c.get("start"), c.get("end"), len(c.get("script", "")),
+                            c.get("title", "")[:40])
 
             job.progress = 70
             store.save_job(job)
+            # Wait before metadata generation to avoid Groq 429 rate limit
+            import time
+            time.sleep(5)
             found = generate_clip_metadata(metadata_gen, found, platform)
+            for c in found:
+                logger.info("  metadata: title=%s desc_len=%d",
+                            c.get("title", "")[:50], len(c.get("description", "")))
 
             clips = [
                 Clip(

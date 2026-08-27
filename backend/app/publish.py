@@ -45,10 +45,22 @@ PUBLISHED_STATUSES = {"publicado"}
 
 def _resolve_thumbnail(store: JobStore, job: Job, clip: Clip) -> Path | None:
     """Devuelve la ruta a la miniatura del clip. Si no existe, la genera on-the-fly."""
+    # Buscar en exports_dir (donde se genera durante processing)
     if clip.thumbnail:
         p = store.exports_dir(job.id) / clip.thumbnail
         if p.exists():
             return p
+        # También buscar en job_dir/thumbs (endpoint clip_thumb)
+        p2 = store.job_dir(job.id) / "thumbs" / clip.thumbnail
+        if p2.exists():
+            return p2
+    # Buscar por patrón estándar
+    for pattern in [f"{clip.id}_thumb.jpg", f"{clip.id}_thumb_0.jpg"]:
+        for d in [store.exports_dir(job.id), store.job_dir(job.id) / "thumbs"]:
+            p = d / pattern
+            if p.exists():
+                return p
+    # Generar on-the-fly si no existe
     source = store.source_path(job.id)
     if not source.exists():
         return None
@@ -143,11 +155,14 @@ async def publish_one(
         if video:
             thumb_path = _resolve_thumbnail(store, job, clip)
             if thumb_path is not None:
+                logger.info("subiendo miniatura a YouTube: %s", thumb_path)
                 ok = await yt.set_thumbnail(video["id"], str(thumb_path), token, creds)
                 if ok:
-                    logger.info("miniatura subida a YouTube para %s", video["id"])
+                    logger.info("miniatura subida exitosamente a YouTube para %s", video["id"])
                 else:
                     logger.warning("no se pudo subir miniatura a YouTube para %s", video["id"])
+            else:
+                logger.warning("no se encontró miniatura para clip %s", clip.id)
             return store.create_post(
                 job.id, clip.id,
                 platform=platform,
@@ -170,19 +185,28 @@ async def publish_one(
 async def publish_all(
     store: JobStore, job: Job, platform: str = "youtube_shorts", account: str | None = None
 ) -> list[PlatformPost]:
-    """Publica todos los clips marcados (flag publish) del job."""
-    created: list[PlatformPost] = []
-    for clip in store.get_clips(job.id):
-        if not clip.publish:
-            continue
-        try:
-            post = await publish_one(store, job, clip, platform, account)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("no se pudo publicar el clip %s: %s", clip.id, exc)
-            post = None
-        if post is not None:
-            created.append(post)
-    return created
+    """Publica todos los clips marcados (flag publish) del job en paralelo."""
+    import asyncio
+
+    marked = [c for c in store.get_clips(job.id) if c.publish]
+    if not marked:
+        return []
+
+    sem = asyncio.Semaphore(1)  # 1 upload a la vez para evitar rate limit de YouTube
+
+    async def _publish_one(clip):
+        async with sem:
+            try:
+                result = await publish_one(store, job, clip, platform, account)
+                # Delay entre uploads para evitar 400/429 de YouTube
+                await asyncio.sleep(30)  # 30 segundos entre uploads
+                return result
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("no se pudo publicar el clip %s: %s", clip.id, exc)
+                return None
+
+    results = await asyncio.gather(*[_publish_one(c) for c in marked])
+    return [p for p in results if p is not None]
 
 
 async def auto_publish_clip(

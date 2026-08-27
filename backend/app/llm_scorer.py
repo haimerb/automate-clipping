@@ -82,9 +82,18 @@ class LLMClipSelector:
             ],
             "temperature": 0.2,
         }
+        import random, time as _time
         client = self._client or httpx.Client(timeout=60.0)
         try:
-            resp = client.post(url, json=payload, headers=headers)
+            for attempt in range(5):
+                resp = client.post(url, json=payload, headers=headers)
+                if resp.status_code == 429:
+                    wait = (3 * (2 ** attempt)) + random.random() * 2
+                    logger.warning("LLM selector 429 — retry %d in %.1fs", attempt + 1, wait)
+                    _time.sleep(wait)
+                    continue
+                resp.raise_for_status()
+                return resp.json()["choices"][0]["message"]["content"]
             resp.raise_for_status()
             return resp.json()["choices"][0]["message"]["content"]
         finally:

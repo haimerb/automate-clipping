@@ -141,7 +141,13 @@ def _upload_sync(
     c = client or httpx.Client(timeout=60.0)
     try:
         resp = c.post(url, json=_metadata(title, description, tags, privacy), headers=headers)
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            import logging
+            logging.getLogger(__name__).error(
+                "YouTube upload init failed %s\nResponse: %s\nMetadata: %s",
+                resp.status_code, resp.text[:1000], _metadata(title, description, tags, privacy),
+            )
+            resp.raise_for_status()
         location = resp.headers["location"]
         size = os.path.getsize(path)
         with open(path, "rb") as fh:

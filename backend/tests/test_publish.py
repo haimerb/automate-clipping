@@ -241,10 +241,13 @@ def test_publish_all_endpoint(tmp_path, auth_headers, sample_video, monkeypatch)
         headers=auth_headers,
     )
     assert resp.status_code == 200
-    posts = resp.json()
-    assert len(posts) == 1
-    assert posts[0]["status"] == "listo"
-    assert posts[0]["url"] == pubmod.STUDIO_UPLOAD_URL
+    results = resp.json()
+    assert len(results) == 1
+    assert results[0]["status"] == "ok"
+    assert results[0]["clip_id"] == clips[0]["id"]
+    post = results[0]["post"]
+    assert post["status"] == "listo"
+    assert post["url"] == pubmod.STUDIO_UPLOAD_URL
 
 
 def test_publish_clip_endpoint(tmp_path, auth_headers, sample_video, monkeypatch) -> None:
