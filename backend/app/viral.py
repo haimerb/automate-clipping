@@ -19,9 +19,12 @@ VIRAL_SYSTEM = (
     "Eres un experto en marketing de contenido viral para YouTube, TikTok y redes sociales. "
     "Generas títulos, descripciones y tags que maximizan views, engagement y shares. "
     "SIEMPRE responde en español. NUNCA uses inglés. "
-    "La descripción debe ser ORIGINAL: analiza el contenido del clip y escribe una descripción "
-    "que resuma de qué trata el video, destaque el momento clave, incluya un call-to-action "
-    "y emojis relevantes. NUNCA repitas la transcripción tal cual. "
+    "REGLA CRÍTICA: El título y la descripción DEBEN referirse directamente al contenido específico "
+    "del clip. Analiza qué se dice exactamente en la transcripción y crea metadata que refleje "
+    "el tema concreto, no algo genérico. Si alguien dice algo sobre un error de marketing, el título "
+    "debe mencionar el error, no solo decir 'esto cambia todo'. "
+    "La descripción debe resumir el contenido REAL del clip, destacar el punto clave "
+    "y terminar con un call-to-action. NUNCA repitas la transcripción tal cual. "
     "Respondes SOLO con JSON válido, sin texto adicional."
 )
 
@@ -47,6 +50,8 @@ _CTA_OPTIONS = [
     "Guarda este video para después 🔖",
 ]
 
+GROQ_API_KEY = os.environ.get("EDGETAPE_GROQ_API_KEY")
+GROQ_MODEL = os.environ.get("EDGETAPE_GROQ_MODEL", "gemma2-9b-it")
 OLLAMA_URL = os.environ.get("EDGETAPE_OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.environ.get("EDGETAPE_OLLAMA_MODEL", "qwen2.5-coder:7b")
 
@@ -94,6 +99,62 @@ class OllamaMetadataGenerator:
             return resp.json()["message"]["content"]
 
 
+class GroqMetadataGenerator:
+    """Genera metadata viral usando Groq API (gratis, sin tarjeta de crédito)."""
+
+    def __init__(
+        self,
+        model: str | None = None,
+        api_key: str | None = None,
+        client: httpx.Client | None = None,
+    ) -> None:
+        self.model = model or GROQ_MODEL
+        self.api_key = api_key or GROQ_API_KEY
+        self._client = client
+
+    @property
+    def name(self) -> str:
+        return f"groq-metadata-{self.model}"
+
+    def generate(
+        self, script: str, title_hint: str, duration: float, platform: str
+    ) -> dict:
+        prompt = _build_metadata_prompt(script, title_hint, duration, platform)
+        content = self._complete(prompt)
+        return _parse_metadata(content)
+
+    def _complete(self, prompt: str) -> str:
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+        }
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": VIRAL_SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.7,
+        }
+        client = self._client or httpx.Client(timeout=60.0)
+        try:
+            for attempt in range(5):
+                resp = client.post(url, json=payload, headers=headers)
+                if resp.status_code == 429:
+                    wait = (3 * (2 ** attempt)) + random.random() * 2
+                    logger.warning("Groq 429 — retry %d in %.1fs", attempt + 1, wait)
+                    time.sleep(wait)
+                    continue
+                resp.raise_for_status()
+                return resp.json()["choices"][0]["message"]["content"]
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"]
+        finally:
+            if self._client is None:
+                client.close()
+
+
 class LLMetadataGenerator:
     def __init__(
         self,
@@ -135,11 +196,11 @@ class LLMetadataGenerator:
         }
         client = self._client or httpx.Client(timeout=60.0)
         try:
-            for attempt in range(4):
+            for attempt in range(5):
                 resp = client.post(url, json=payload, headers=headers)
                 if resp.status_code == 429:
-                    wait = 2 ** attempt + random.random()
-                    logger.warning("Groq 429 — retry %d in %.1fs", attempt + 1, wait)
+                    wait = (3 * (2 ** attempt)) + random.random() * 2
+                    logger.warning("LLM 429 — retry %d in %.1fs", attempt + 1, wait)
                     time.sleep(wait)
                     continue
                 resp.raise_for_status()
@@ -164,7 +225,11 @@ class HeuristicMetadataGenerator:
 
 
 def build_metadata_generator() -> MetadataGenerator:
-    # 1. API remota (OpenAI, Groq, etc.) — tiene prioridad si hay key
+    # 1. Groq API (gratis, sin tarjeta) — tiene prioridad si hay key
+    if GROQ_API_KEY:
+        return GroqMetadataGenerator()
+
+    # 2. API remota (OpenAI, Groq legacy, etc.) — tiene prioridad si hay key
     if (
         os.environ.get("EDGETAPE_LLM_MODEL")
         or os.environ.get("EDGETAPE_LLM_API_KEY")
@@ -172,7 +237,7 @@ def build_metadata_generator() -> MetadataGenerator:
     ):
         return LLMetadataGenerator()
 
-    # 2. Ollama local (sin API key)
+    # 3. Ollama local (sin API key)
     try:
         with httpx.Client(timeout=3.0) as c:
             resp = c.get(f"{OLLAMA_URL}/api/tags")
@@ -183,7 +248,7 @@ def build_metadata_generator() -> MetadataGenerator:
     except Exception:
         pass
 
-    # 3. Fallback heurístico
+    # 4. Fallback heurístico
     return HeuristicMetadataGenerator()
 
 
@@ -193,20 +258,35 @@ def generate_clip_metadata(
     platform: str = "youtube_shorts",
 ) -> list[dict]:
     for clip in clips:
+        script = clip.get("script", "")
+        if not script or len(script.strip()) < 10:
+            logger.warning("clip has empty/short script (%d chars), using heuristic", len(script))
+            clip["title"] = _heuristic_title(script, clip.get("title", ""))
+            clip["description"] = _heuristic_description(script, clip.get("duration", 30.0))
+            clip["tags"] = _heuristic_tags(script, platform)
+            continue
         try:
+            logger.info("generating metadata with %s for script=%d chars",
+                        generator.name, len(script))
+            logger.info("script preview: %s", script[:150])
             meta = generator.generate(
-                clip.get("script", ""),
+                script,
                 clip.get("title", ""),
                 clip.get("duration", 30.0),
                 platform,
             )
+            if not meta.get("title") and not meta.get("description"):
+                raise ValueError("LLM returned empty metadata")
             clip["title"] = meta.get("title", clip.get("title", ""))
             clip["description"] = meta.get("description", "")
             clip["tags"] = meta.get("tags", [])
+            logger.info("OK title=%s", clip["title"][:60])
         except Exception as exc:  # noqa: BLE001
-            logger.warning("metadata generation failed for clip (%s)", exc)
-            clip["description"] = clip.get("script", "")[:300]
-            clip["tags"] = _heuristic_tags(clip.get("script", ""), platform)
+            logger.warning("metadata generation FAILED (%s); using HEURISTIC", exc)
+            clip["title"] = _heuristic_title(script, clip.get("title", ""))
+            clip["description"] = _heuristic_description(script, clip.get("duration", 30.0))
+            clip["tags"] = _heuristic_tags(script, platform)
+            logger.info("heuristic title=%s", clip["title"][:60])
     return clips
 
 
@@ -223,15 +303,24 @@ def _build_metadata_prompt(script: str, title_hint: str, duration: float, platfo
     return (
         f"Plataforma objetivo: {pname}\n"
         f"Duración del clip: {duration:.0f} segundos\n\n"
-        f"Transcripción del clip:\n{script[:2000]}\n\n"
-        f"Instrucciones (IMPORTANTE: responde SIEMPRE en español):\n"
-        f"1. TITLE: Título gancho optimizado para {pname}, máx {max_title} caracteres. "
-        f"Usa ganchos emocionales, números, preguntas o promesas de valor. "
-        f"NO repitas la transcripción. Sé CREATIVO.\n"
-        f"2. DESCRIPTION: Descripción ORIGINAL de 2-3 oraciones que resuma de qué trata "
-        f"el video, destaque el momento clave o la enseñanza, incluya un call-to-action "
-        f"(suscríbete, comenta, comparte) y 2-3 emojis. NO repitas la transcripción.\n"
-        f"3. TAGS: 8-12 tags trending y relevantes en minúsculas.\n\n"
+        f"Transcripción COMPLETA del clip:\n\"\"\"\n{script[:2500]}\n\"\"\"\n\n"
+        f"Instrucciones (IMPORTANTE: responde SIEMPRE en español):\n\n"
+        f"1. TITLE (máx {max_title} caracteres):\n"
+        f"   - DEBE referirse al contenido ESPECÍFICO de la transcripción\n"
+        f"   - Identifica el tema concreto (ej: si habla de un error de pricing, menciona 'pricing')\n"
+        f"   - Usa ganchos emocionales PERO anclados al contenido real\n"
+        f"   - NO uses títulos genéricos como 'Esto cambia todo' sin contexto\n"
+        f"   - Ejemplos BUENOS: 'El error de pricing que le costó 10k al cliente'\n"
+        f"   - Ejemplos MALOS: 'No vas a creer lo que pasó' (demasiado genérico)\n\n"
+        f"2. DESCRIPTION (2-3 oraciones):\n"
+        f"   - Resumen de qué se HABLA específicamente en el clip\n"
+        f"   - Destaca el punto clave o enseñanza\n"
+        f"   - Termina con call-to-action (suscríbete, comenta, comparte)\n"
+        f"   - Incluye 2-3 emojis relevantes\n"
+        f"   - NUNCA repitas la transcripción\n\n"
+        f"3. TAGS (8-12 tags trending y relevantes en minúsculas):\n"
+        f"   - Tags específicos del tema (no solo genéricos como 'viral')\n"
+        f"   - Incluye tags de la plataforma\n\n"
         f"Responde SOLO con JSON:\n"
         f'{{"title": "<título>", "description": "<descripción>", "tags": [<tags>]}}'
     )
@@ -256,7 +345,7 @@ def _heuristic_title(script: str, hint: str) -> str:
     words = _content_words(script)
     if not words:
         return "Momento clave"
-    topic = " ".join(words[:5])
+    topic = " ".join(words[:8])
     pattern = random.choice(_TITLE_PATTERNS)
     title = pattern.format(topic=topic)
     if len(title) > 80:
@@ -269,7 +358,7 @@ def _heuristic_description(script: str, duration: float) -> str:
     if not words:
         return f"Clip de {duration:.0f}s #shorts #clip #viral"
     sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", script) if s.strip()]
-    hook = sentences[0][:150] if sentences else " ".join(words[:12])
+    hook = sentences[0][:200] if sentences else " ".join(words[:15])
     cta = random.choice(_CTA_OPTIONS)
     return (
         f"🔥 {hook}\n\n"

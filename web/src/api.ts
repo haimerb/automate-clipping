@@ -31,9 +31,23 @@ export interface Clip {
   description: string;
   tags: string[];
   thumbnail: string | null;
+  thumbnails: string[];
+  thumbnail_index: number;
   exported: boolean;
   export_name: string | null;
   publish: boolean;
+  destinations: Destination[];
+}
+
+export interface Thumbnail {
+  index: number;
+  url: string;
+  selected: boolean;
+}
+
+export interface Destination {
+  platform: string;
+  account: string;
 }
 
 export interface PlatformPost {
@@ -278,6 +292,56 @@ export function setClipPublish(jobId: string, clipId: string, publish: boolean):
   });
 }
 
+export function updateClip(
+  jobId: string,
+  clipId: string,
+  updates: {
+    publish?: boolean;
+    thumbnail_index?: number;
+    destinations?: Destination[];
+    title?: string;
+    description?: string;
+    tags?: string[];
+  },
+): Promise<Clip> {
+  return request<Clip>(`/api/jobs/${jobId}/clips/${clipId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(updates),
+  });
+}
+
+export function getClipThumbs(
+  jobId: string,
+  clipId: string,
+): Promise<{ thumbnails: Thumbnail[]; selected_index: number }> {
+  return request(`/api/jobs/${jobId}/clips/${clipId}/thumbs`);
+}
+
+export function selectClipThumb(
+  jobId: string,
+  clipId: string,
+  thumbnail_index: number,
+): Promise<Clip> {
+  return request<Clip>(`/api/jobs/${jobId}/clips/${clipId}/thumbnail`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ thumbnail_index }),
+  });
+}
+
+export function updateClipMetadata(
+  jobId: string,
+  clipId: string,
+  metadata: { title?: string; description?: string; tags?: string[] },
+): Promise<Clip> {
+  return request<Clip>(`/api/jobs/${jobId}/clips/${clipId}/metadata`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(metadata),
+  });
+}
+
 export function patchJobSettings(
   jobId: string,
   autoPublish: boolean,
@@ -295,12 +359,19 @@ export function patchJobSettings(
   });
 }
 
+export interface PublishResult {
+  clip_id: string;
+  status: "ok" | "error" | "skipped";
+  post: PlatformPost | null;
+  error: string | null;
+}
+
 export function publishAll(
   jobId: string,
   platform: string,
   account: string | null,
-): Promise<PlatformPost[]> {
-  return request<PlatformPost[]>(`/api/jobs/${jobId}/publish-all`, {
+): Promise<PublishResult[]> {
+  return request<PublishResult[]>(`/api/jobs/${jobId}/publish-all`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ platform, account }),

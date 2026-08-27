@@ -13,9 +13,11 @@ import {
   Select,
   Stack,
   Switch,
+  TextField,
   Typography,
 } from "@mui/material";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
+import EditRoundedIcon from "@mui/icons-material/EditRounded";
 import {
   PLATFORM_LABELS,
   POST_STATUS_LABELS,
@@ -26,8 +28,10 @@ import {
   patchJobSettings,
   publishClip,
   setClipPublish,
+  updateClip,
+  updateClipMetadata,
 } from "../api";
-import type { Clip, Job, LinkedAccount, PlatformPost } from "../api";
+import type { Clip, Destination, Job, LinkedAccount, PlatformPost } from "../api";
 import ClipPreview from "./ClipPreview";
 import MonetizationPanel from "./MonetizationPanel";
 import { EDGE, INK, MARK, MONO } from "../theme";
@@ -40,29 +44,13 @@ interface Props {
   onJobChange: (job: Job) => void;
 }
 
-interface Destination {
-  platform: string;
-  account: string;
-}
-
 const DEFAULT_PLATFORM = "youtube_shorts";
-
-const DESTS_KEY = "edgetape:dests";
-
-function readDests(): Record<string, Destination[]> {
-  try {
-    return JSON.parse(localStorage.getItem(DESTS_KEY) ?? "{}");
-  } catch {
-    return {};
-  }
-}
 
 export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange }: Props) {
   const [busy, setBusy] = useState<string | null>(null);
   const [publishingAll, setPublishingAll] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [accounts, setAccounts] = useState<LinkedAccount[]>([]);
-  const [dests, setDests] = useState<Record<string, Destination[]>>(readDests);
   const [draftPlatform, setDraftPlatform] = useState<Record<string, string>>({});
   const [draftAccount, setDraftAccount] = useState<Record<string, string>>({});
   const [autoPublish, setAutoPublish] = useState(job.auto_publish);
@@ -71,6 +59,10 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
   const [posts, setPosts] = useState<PlatformPost[]>([]);
   const [doneCount, setDoneCount] = useState(0);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [editingClip, setEditingClip] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [editTags, setEditTags] = useState("");
 
   const selected = clips.filter((c) => c.publish);
 
@@ -105,10 +97,6 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
     setAutoPublishAccount(job.auto_publish_account || "");
   }, [job.auto_publish, job.auto_publish_platform, job.auto_publish_account]);
 
-  useEffect(() => {
-    localStorage.setItem(DESTS_KEY, JSON.stringify(dests));
-  }, [dests]);
-
   const postByDest = useMemo(() => {
     const map: Record<string, PlatformPost> = {};
     for (const p of posts) {
@@ -120,8 +108,8 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
   }, [posts]);
 
   const destCount = useMemo(
-    () => selected.reduce((acc, clip) => acc + (dests[clip.id] ?? []).length, 0),
-    [selected, dests],
+    () => selected.reduce((acc, clip) => acc + (clip.destinations?.length ?? 0), 0),
+    [selected],
   );
 
   function defaultDraft(clipId: string): { platform: string; account: string } {
@@ -139,20 +127,26 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
     setDraftAccount((prev) => ({ ...prev, [clipId]: available[0]?.name ?? "" }));
   }
 
-  function addDestination(clip: Clip) {
+  async function addDestination(clip: Clip) {
     const draft = defaultDraft(clip.id);
     if (!draft.platform) return;
-    setDests((prev) => ({
-      ...prev,
-      [clip.id]: [...(prev[clip.id] ?? []), { ...draft }],
-    }));
+    const newDests = [...(clip.destinations ?? []), { ...draft }];
+    try {
+      const updated = await updateClip(job.id, clip.id, { destinations: newDests });
+      onUpdateClip(updated);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo guardar el destino");
+    }
   }
 
-  function removeDestination(clipId: string, index: number) {
-    setDests((prev) => ({
-      ...prev,
-      [clipId]: (prev[clipId] ?? []).filter((_, i) => i !== index),
-    }));
+  async function removeDestination(clip: Clip, index: number) {
+    const newDests = (clip.destinations ?? []).filter((_, i) => i !== index);
+    try {
+      const updated = await updateClip(job.id, clip.id, { destinations: newDests });
+      onUpdateClip(updated);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo quitar el destino");
+    }
   }
 
   async function togglePublish(clip: Clip, publish: boolean) {
@@ -227,7 +221,7 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
 
   async function publishAllDestinations() {
     const targets = selected.flatMap((clip) =>
-      (dests[clip.id] ?? []).map((dest) => ({ clip, dest })),
+      (clip.destinations ?? []).map((dest) => ({ clip, dest })),
     );
     if (targets.length === 0) return;
     setPublishingAll(true);
@@ -245,6 +239,31 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
     if (errors.length) setError(errors.join("; "));
     await refreshPosts();
     setPublishingAll(false);
+  }
+
+  function startEditMetadata(clip: Clip) {
+    setEditingClip(clip.id);
+    setEditTitle(clip.title);
+    setEditDescription(clip.description);
+    setEditTags(clip.tags.join(", "));
+  }
+
+  async function saveMetadata(clipId: string) {
+    try {
+      const tags = editTags
+        .split(",")
+        .map((t) => t.trim())
+        .filter(Boolean);
+      const updated = await updateClipMetadata(job.id, clipId, {
+        title: editTitle,
+        description: editDescription,
+        tags,
+      });
+      onUpdateClip(updated);
+      setEditingClip(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo guardar la metadata");
+    }
   }
 
   return (
@@ -422,9 +441,10 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
 
             <Stack spacing={3} sx={{ mt: 3 }}>
               {selected.map((clip) => {
-                const clipDests = dests[clip.id] ?? [];
+                const clipDests = clip.destinations ?? [];
                 const draft = defaultDraft(clip.id);
                 const draftAvailable = accountsForPlatform(accounts, draft.platform);
+                const isEditing = editingClip === clip.id;
                 return (
                   <Paper
                     key={clip.id}
@@ -460,23 +480,79 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
                         spacing={2}
                         sx={{ justifyContent: "space-between", alignItems: "flex-start" }}
                       >
-                        <Box>
-                          <Typography variant="h5">{clip.title}</Typography>
+                        <Box sx={{ flex: 1 }}>
+                          {isEditing ? (
+                            <TextField
+                              size="small"
+                              fullWidth
+                              value={editTitle}
+                              onChange={(e) => setEditTitle(e.target.value)}
+                              label="Título"
+                              slotProps={{ htmlInput: { maxLength: 100 } }}
+                              sx={{ mb: 1 }}
+                            />
+                          ) : (
+                            <Typography variant="h5">{clip.title}</Typography>
+                          )}
                           <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                            “{clip.line}”
+                            "{clip.line}"
                           </Typography>
                         </Box>
-                        <Button
-                          size="small"
-                          variant={clip.publish ? "contained" : "outlined"}
-                          color={clip.publish ? "secondary" : "primary"}
-                          onClick={() => void togglePublish(clip, !clip.publish)}
-                          disabled={busy === clip.id || publishingAll}
-                          sx={{ whiteSpace: "nowrap", color: clip.publish ? INK : undefined }}
-                        >
-                          {clip.publish ? "✔ Para publicar" : "Para publicar"}
-                        </Button>
+                        <Stack direction="row" spacing={1}>
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            onClick={() => isEditing ? setEditingClip(null) : startEditMetadata(clip)}
+                            disabled={publishingAll}
+                            startIcon={isEditing ? undefined : <EditRoundedIcon />}
+                            sx={{ whiteSpace: "nowrap" }}
+                          >
+                            {isEditing ? "Cancelar" : "Editar"}
+                          </Button>
+                          <Button
+                            size="small"
+                            variant={clip.publish ? "contained" : "outlined"}
+                            color={clip.publish ? "secondary" : "primary"}
+                            onClick={() => void togglePublish(clip, !clip.publish)}
+                            disabled={busy === clip.id || publishingAll}
+                            sx={{ whiteSpace: "nowrap", color: clip.publish ? INK : undefined }}
+                          >
+                            {clip.publish ? "✔ Para publicar" : "Para publicar"}
+                          </Button>
+                        </Stack>
                       </Stack>
+
+                      {isEditing && (
+                        <Box sx={{ mt: 2, p: 2, bgcolor: "action.hover", borderRadius: 1 }}>
+                          <TextField
+                            size="small"
+                            fullWidth
+                            multiline
+                            rows={3}
+                            value={editDescription}
+                            onChange={(e) => setEditDescription(e.target.value)}
+                            label="Descripción"
+                            slotProps={{ htmlInput: { maxLength: 2000 } }}
+                            sx={{ mb: 1 }}
+                          />
+                          <TextField
+                            size="small"
+                            fullWidth
+                            value={editTags}
+                            onChange={(e) => setEditTags(e.target.value)}
+                            label="Tags (separados por coma)"
+                            helperText={`${editTags.split(",").filter((t) => t.trim()).length} tags`}
+                            sx={{ mb: 1 }}
+                          />
+                          <Button
+                            size="small"
+                            variant="contained"
+                            onClick={() => void saveMetadata(clip.id)}
+                          >
+                            Guardar cambios
+                          </Button>
+                        </Box>
+                      )}
 
                       <Box
                         sx={{
@@ -569,7 +645,7 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
                                     <IconButton
                                       size="small"
                                       aria-label="quitar destino"
-                                      onClick={() => removeDestination(clip.id, index)}
+                                      onClick={() => void removeDestination(clip, index)}
                                       disabled={publishingAll}
                                     >
                                       <CloseRoundedIcon fontSize="small" />

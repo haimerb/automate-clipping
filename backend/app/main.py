@@ -21,6 +21,7 @@ from .media import extract_thumbnail
 from .models import (
     Clip,
     ClipPublish,
+    ClipUpdate,
     DashboardStats,
     GenerateRequest,
     Job,
@@ -28,13 +29,16 @@ from .models import (
     LinkedAccountCreate,
     LinkedAccountOut,
     LoginRequest,
+    MetadataUpdate,
     PlatformPost,
     PlatformTotals,
     PostCreate,
     PublishAllRequest,
     PublishClipRequest,
+    PublishResult,
     RecentPost,
     RegisterRequest,
+    ThumbnailSelect,
     TokenResponse,
     UserOut,
 )
@@ -108,6 +112,9 @@ def _account_out(account: LinkedAccount) -> LinkedAccountOut:
 
 
 def create_app(storage_root: str | Path | None = None, transcriber=None, selector=None) -> FastAPI:
+    import logging
+    logging.basicConfig(level=logging.INFO, format="%(name)s: %(message)s")
+
     store = JobStore(storage_root or os.environ.get("EDGETAPE_STORAGE") or DEFAULT_STORAGE)
     tsc = transcriber or build_transcriber()
     sel = selector or build_clip_selector()
@@ -133,6 +140,41 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
         if clip is None:
             raise HTTPException(status_code=404, detail="clip not found")
         return clip
+
+    @app.post("/api/jobs/{job_id}/transcription", response_model=Job)
+    async def receive_transcription(
+        job_id: str, request: Request
+    ) -> Job:
+        """Receive transcription segments from Colab or external service."""
+        # Verify secret token
+        secret = os.environ.get("EDGETAPE_COLAB_SECRET")
+        if secret:
+            auth_header = request.headers.get("Authorization", "")
+            if auth_header != f"Bearer {secret}":
+                raise HTTPException(status_code=401, detail="Invalid secret")
+
+        job = store.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="job not found")
+
+        body = await request.json()
+        segments = body.get("segments", [])
+        if not segments:
+            raise HTTPException(status_code=400, detail="No segments provided")
+
+        # Store transcription
+        import json
+        job_dir = store.job_dir(job_id)
+        job_dir.mkdir(parents=True, exist_ok=True)
+        (job_dir / "transcription.json").write_text(
+            json.dumps(segments, ensure_ascii=False), encoding="utf-8"
+        )
+
+        # Continue pipeline: scoring → metadata → export
+        from .processing import run_job
+        await run_job(job_id, store, tsc, sel)
+
+        return store.get_job(job_id)
 
     @app.get("/api/health")
     def health() -> dict:
@@ -485,14 +527,34 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
         store.save_clips(job.id, clips)
         return clips
 
-    @app.post("/api/jobs/{job_id}/publish-all", response_model=list[PlatformPost])
+    @app.post("/api/jobs/{job_id}/publish-all", response_model=list[PublishResult])
     async def publish_all(
         job_id: str, body: PublishAllRequest, user: User = Depends(get_current_user)
-    ) -> list[PlatformPost]:
+    ) -> list[PublishResult]:
+        import asyncio
+
         job = owned_job(job_id, user.id)
         if job.status != "done":
             raise HTTPException(status_code=409, detail="El video aún no está listo para publicar")
-        return await pubmod.publish_all(store, job, body.platform, body.account)
+
+        marked = [c for c in store.get_clips(job.id) if c.publish]
+        if not marked:
+            return []
+
+        sem = asyncio.Semaphore(3)
+
+        async def _publish_one(clip):
+            async with sem:
+                try:
+                    post = await pubmod.publish_one(store, job, clip, body.platform, body.account)
+                    if post:
+                        return PublishResult(clip_id=clip.id, status="ok", post=post)
+                    return PublishResult(clip_id=clip.id, status="skipped")
+                except Exception as exc:  # noqa: BLE001
+                    return PublishResult(clip_id=clip.id, status="error", error=str(exc))
+
+        results = await asyncio.gather(*[_publish_one(c) for c in marked])
+        return list(results)
 
     @app.post(
         "/api/jobs/{job_id}/clips/{clip_id}/publish", response_model=PlatformPost, status_code=201
@@ -533,6 +595,14 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
             raise HTTPException(status_code=404, detail="fuente no disponible")
         thumbs = store.job_dir(job.id) / "thumbs"
         thumbs.mkdir(parents=True, exist_ok=True)
+
+        # Use selected thumbnail if available
+        if clip.thumbnail:
+            out = thumbs / clip.thumbnail
+            if out.exists():
+                return FileResponse(out, media_type="image/jpeg")
+
+        # Fallback to clip index-based thumbnail
         out = thumbs / f"{clip.id}.jpg"
         if not out.exists():
             at = (clip.start + clip.end) / 2
@@ -542,12 +612,97 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
                 raise HTTPException(status_code=500, detail="no se pudo generar la miniatura")
         return FileResponse(out, media_type="image/jpeg")
 
+    @app.get("/api/jobs/{job_id}/clips/{clip_id}/thumbs")
+    def clip_thumbs(
+        job_id: str, clip_id: str, user: User = Depends(get_current_user)
+    ) -> dict:
+        """Return available thumbnails for a clip."""
+        job = owned_job(job_id, user.id)
+        clip = owned_clip(job, clip_id)
+        thumbs_dir = store.job_dir(job.id) / "thumbs"
+
+        # Generate multiple thumbnails if not already done
+        if not clip.thumbnails:
+            src = store.source_path(job.id)
+            if src.exists():
+                from .media import extract_multiple_thumbnails
+                filenames = extract_multiple_thumbnails(
+                    src, clip.start, clip.end, thumbs_dir, clip.id
+                )
+                if filenames:
+                    clip.thumbnails = filenames
+                    clip.thumbnail = filenames[0]
+                    store.update_clip(job.id, clip.id,
+                                      thumbnails=filenames, thumbnail=filenames[0])
+
+        thumbnails = []
+        for i, fname in enumerate(clip.thumbnails):
+            thumbnails.append({
+                "index": i,
+                "url": f"/api/jobs/{job_id}/clips/{clip_id}/thumb?name={fname}",
+                "selected": i == clip.thumbnail_index,
+            })
+
+        return {"thumbnails": thumbnails, "selected_index": clip.thumbnail_index}
+
+    @app.patch("/api/jobs/{job_id}/clips/{clip_id}/thumbnail")
+    def select_thumbnail(
+        job_id: str, clip_id: str, body: ThumbnailSelect, user: User = Depends(get_current_user)
+    ) -> Clip:
+        """Select which thumbnail to use for a clip."""
+        job = owned_job(job_id, user.id)
+        clip = owned_clip(job, clip_id)
+        if body.thumbnail_index < 0 or body.thumbnail_index >= len(clip.thumbnails):
+            raise HTTPException(status_code=400, detail="Índice de miniatura inválido")
+        clip.thumbnail_index = body.thumbnail_index
+        clip.thumbnail = clip.thumbnails[body.thumbnail_index]
+        store.update_clip(job.id, clip.id,
+                          thumbnail_index=body.thumbnail_index,
+                          thumbnail=clip.thumbnail)
+        return clip
+
+    @app.patch("/api/jobs/{job_id}/clips/{clip_id}/metadata", response_model=Clip)
+    def update_clip_metadata(
+        job_id: str, clip_id: str, body: MetadataUpdate, user: User = Depends(get_current_user)
+    ) -> Clip:
+        """Update title, description, and tags for a clip."""
+        job = owned_job(job_id, user.id)
+        clip = owned_clip(job, clip_id)
+        updates = {}
+        if body.title is not None:
+            updates["title"] = body.title[:100]
+        if body.description is not None:
+            updates["description"] = body.description[:2000]
+        if body.tags is not None:
+            updates["tags"] = [t.lower().strip() for t in body.tags][:15]
+        if updates:
+            store.update_clip(job.id, clip_id, **updates)
+            clip = owned_clip(job, clip_id)
+        return clip
+
     @app.patch("/api/jobs/{job_id}/clips/{clip_id}", response_model=Clip)
     def set_clip_publish(
-        job_id: str, clip_id: str, body: ClipPublish, user: User = Depends(get_current_user)
+        job_id: str, clip_id: str, body: ClipUpdate, user: User = Depends(get_current_user)
     ) -> Clip:
         job = owned_job(job_id, user.id)
-        clip = store.update_clip(job.id, clip_id, publish=body.publish)
+        updates = {}
+        if body.publish is not None:
+            updates["publish"] = body.publish
+        if body.thumbnail_index is not None:
+            updates["thumbnail_index"] = body.thumbnail_index
+            clip = owned_clip(job, clip_id)
+            if body.thumbnail_index < len(clip.thumbnails):
+                updates["thumbnail"] = clip.thumbnails[body.thumbnail_index]
+        if body.destinations is not None:
+            updates["destinations"] = body.destinations
+        if body.title is not None:
+            updates["title"] = body.title[:100]
+        if body.description is not None:
+            updates["description"] = body.description[:2000]
+        if body.tags is not None:
+            updates["tags"] = [t.lower().strip() for t in body.tags][:15]
+
+        clip = store.update_clip(job.id, clip_id, **updates)
         if clip is None:
             raise HTTPException(status_code=404, detail="clip not found")
         if body.publish and job.auto_publish and job.status == "done":

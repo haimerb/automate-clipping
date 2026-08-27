@@ -118,6 +118,37 @@ def extract_best_thumbnail(
     extract_thumbnail(src, best_at, out, width)
 
 
+def extract_multiple_thumbnails(
+    src: str | Path, start: float, end: float, out_dir: str | Path,
+    clip_id: str, count: int = 5, width: int = 360,
+) -> list[str]:
+    """Extract `count` thumbnail frames evenly spaced across the clip.
+    Returns list of filenames (e.g. ["c1_thumb_0.jpg", ...])."""
+    from pathlib import Path as P
+
+    out_dir = P(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    dur = end - start
+    if dur <= 0:
+        fname = f"{clip_id}_thumb_0.jpg"
+        extract_thumbnail(src, start, out_dir / fname, width)
+        return [fname]
+
+    # Sample at 10%, 25%, 50%, 75%, 90% of clip duration
+    fractions = [0.1, 0.25, 0.5, 0.75, 0.9][:count]
+    filenames = []
+    for i, frac in enumerate(fractions):
+        t = start + dur * frac
+        fname = f"{clip_id}_thumb_{i}.jpg"
+        try:
+            extract_thumbnail(src, t, out_dir / fname, width)
+            filenames.append(fname)
+        except Exception:
+            pass
+    return filenames
+
+
 def has_ffmpeg() -> bool:
     return _which(FFMPEG) is not None
 
