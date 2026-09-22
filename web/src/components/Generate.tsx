@@ -22,6 +22,16 @@ import MovieFilterRoundedIcon from "@mui/icons-material/MovieFilterRounded";
 import CheckCircleRoundedIcon from "@mui/icons-material/CheckCircleRounded";
 import ErrorRoundedIcon from "@mui/icons-material/ErrorRounded";
 import {
+  generateVideo,
+  getAccounts,
+  getClips,
+  getJob,
+  listJobs,
+  publishClip,
+  setClipPublish,
+} from "../api";
+import type { Job, LinkedAccount } from "../api";
+import {
   EDGE,
   EDGE_SOFT,
   INK,
@@ -33,16 +43,6 @@ import {
   SANS,
   SURFACE_2,
 } from "../theme";
-import {
-  generateVideo,
-  getAccounts,
-  getClips,
-  getJob,
-  listJobs,
-  publishClip,
-  setClipPublish,
-} from "../api";
-import type { Job, LinkedAccount } from "../api";
 
 interface GenerateProps {
   onJobReady: (job: Job) => void;
@@ -175,7 +175,7 @@ export default function Generate({ onJobReady, onOpenJob }: GenerateProps) {
   }
 
   return (
-    <Box sx={{ maxWidth: 960, mx: "auto", px: { xs: 2, md: 3 }, py: 4 }}>
+    <Box component="section" sx={{ maxWidth: 960, mx: "auto", px: { xs: 2, md: 3 }, py: 4 }}>
       <Box sx={{ mb: 4 }}>
         <Typography variant="overline" sx={{ display: "block", mb: 0.5 }}>
           Generador de video

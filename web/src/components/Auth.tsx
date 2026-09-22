@@ -53,6 +53,7 @@ export default function Auth({ onAuth }: Props) {
 
   return (
     <Box
+      component="main"
       sx={{
         minHeight: "100vh",
         display: "grid",

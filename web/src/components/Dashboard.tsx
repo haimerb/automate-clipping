@@ -1,14 +1,5 @@
 import { useEffect, useState } from "react";
 import {
-  ACCOUNT_PLATFORM_LABELS,
-  PLATFORM_LABELS,
-  formatMoney,
-  getAccounts,
-  getDashboard,
-  getJob,
-} from "../api";
-import type { DashboardStats, Job, LinkedAccount } from "../api";
-import {
   Alert,
   Box,
   Button,
@@ -24,6 +15,15 @@ import {
   TableRow,
   Typography,
 } from "@mui/material";
+import {
+  ACCOUNT_PLATFORM_LABELS,
+  PLATFORM_LABELS,
+  formatMoney,
+  getAccounts,
+  getDashboard,
+  getJob,
+} from "../api";
+import type { DashboardStats, Job, LinkedAccount } from "../api";
 import { EDGE, INK, MARK, MONO } from "../theme";
 import ConfirmDialog from "./ConfirmDialog";
 
@@ -120,7 +120,7 @@ export default function Dashboard({ onNewJob, onOpenJob }: Props) {
   const pending = stats ? stats.posts - stats.publicados : 0;
 
   return (
-    <Container maxWidth="lg" sx={{ py: { xs: 5, md: 7 } }}>
+    <Container component="section" maxWidth="lg" sx={{ py: { xs: 5, md: 7 } }}>
       <Stack
         direction={{ xs: "column", md: "row" }}
         spacing={2}

@@ -32,7 +32,18 @@ import Auth from "./components/Auth";
 import ConfirmDialog from "./components/ConfirmDialog";
 import { getClips, getJob, getMe, getToken, setToken } from "./api";
 import type { Clip, Job, User } from "./api";
-import { CARD, EDGE, INK, MARK, MONO, SIDEBAR_WIDTH } from "./theme";
+import {
+  CARD,
+  EDGE,
+  INK,
+  MARK,
+  MONO,
+  SIDEBAR_DISABLED,
+  SIDEBAR_HOVER,
+  SIDEBAR_TEXT,
+  SIDEBAR_TEXT_ACTIVE,
+  SIDEBAR_WIDTH,
+} from "./theme";
 
 type Phase = "upload" | "reel" | "publish" | "generate" | "accounts" | "dashboard";
 
@@ -161,81 +172,83 @@ function SidebarContent({ nav, active, badge, disabled, onNavigate, onLogout, us
       <Toolbar sx={{ px: 2.5, gap: 1, minHeight: 72 }}>
         <Brand />
       </Toolbar>
-      <Divider sx={{ borderColor: "rgba(255,255,255,0.08)", mx: 2 }} />
-      <List sx={{ px: 1.5, py: 1, flex: 1 }}>
-        {nav.map((item) => {
-          const disabledHere = disabled[item.phase] === true;
-          const count = badge[item.phase];
-          return (
-            <Box key={item.phase}>
-              {item.dividerBefore && (
-                <Divider sx={{ borderColor: "rgba(255,255,255,0.08)", my: 1, mx: 1 }} />
-              )}
-              <ListItemButton
-                selected={active === item.phase}
-                disabled={disabledHere}
-                onClick={() => onNavigate(item.phase)}
-                sx={{ mb: 0.3, py: 1, px: 1.5 }}
-              >
-                <ListItemIcon
-                  sx={{
-                    minWidth: 32,
-                    color: active === item.phase ? MARK : "rgba(255,255,255,0.5)",
-                  }}
+      <Divider sx={{ borderColor: SIDEBAR_HOVER, mx: 2 }} />
+      <Box component="nav" aria-label="Navegación principal" sx={{ flex: 1, overflow: "auto" }}>
+        <List sx={{ px: 1.5, py: 1 }}>
+          {nav.map((item) => {
+            const disabledHere = disabled[item.phase] === true;
+            const count = badge[item.phase];
+            return (
+              <Box key={item.phase}>
+                {item.dividerBefore && (
+                  <Divider sx={{ borderColor: SIDEBAR_HOVER, my: 1, mx: 1 }} />
+                )}
+                <ListItemButton
+                  selected={active === item.phase}
+                  disabled={disabledHere}
+                  onClick={() => onNavigate(item.phase)}
+                  sx={{ mb: 0.3, py: 1, px: 1.5 }}
                 >
-                  {item.icon}
-                </ListItemIcon>
-                <ListItemText
-                  primary={item.label}
-                  secondary={item.caption}
-                  slotProps={{
-                    primary: {
-                      sx: {
-                        fontWeight: active === item.phase ? 700 : 500,
-                        fontSize: "0.85rem",
-                        lineHeight: 1.3,
-                        color: disabledHere
-                          ? "rgba(255,255,255,0.2)"
-                          : active === item.phase
-                          ? "#fff"
-                          : "rgba(255,255,255,0.75)",
-                      },
-                    },
-                    secondary: {
-                      sx: {
-                        fontSize: "0.62rem",
-                        color: "rgba(255,255,255,0.3)",
-                        lineHeight: 1.3,
-                      },
-                    },
-                  }}
-                />
-                {count !== undefined && count > 0 && (
-                  <Box
+                  <ListItemIcon
                     sx={{
-                      minWidth: 20,
-                      height: 20,
-                      px: 0.5,
-                      borderRadius: 1,
-                      background: active === item.phase ? MARK : "rgba(255,255,255,0.12)",
-                      color: active === item.phase ? INK : "rgba(255,255,255,0.7)",
-                      fontFamily: MONO,
-                      fontSize: "0.6rem",
-                      fontWeight: 600,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
+                      minWidth: 32,
+                      color: active === item.phase ? MARK : SIDEBAR_TEXT,
                     }}
                   >
-                    {count}
-                  </Box>
-                )}
-              </ListItemButton>
-            </Box>
-          );
-        })}
-      </List>
-      <Divider sx={{ borderColor: "rgba(255,255,255,0.08)", mx: 2 }} />
+                    {item.icon}
+                  </ListItemIcon>
+                  <ListItemText
+                    primary={item.label}
+                    secondary={item.caption}
+                    slotProps={{
+                      primary: {
+                        sx: {
+                          fontWeight: active === item.phase ? 700 : 500,
+                          fontSize: "0.85rem",
+                          lineHeight: 1.3,
+                          color: disabledHere
+                            ? SIDEBAR_DISABLED
+                            : active === item.phase
+                            ? SIDEBAR_TEXT_ACTIVE
+                            : "rgba(255,255,255,0.75)",
+                        },
+                      },
+                      secondary: {
+                        sx: {
+                          fontSize: "0.62rem",
+                          color: "rgba(255,255,255,0.3)",
+                          lineHeight: 1.3,
+                        },
+                      },
+                    }}
+                  />
+                  {count !== undefined && count > 0 && (
+                    <Box
+                      sx={{
+                        minWidth: 20,
+                        height: 20,
+                        px: 0.5,
+                        borderRadius: 1,
+                        background: active === item.phase ? MARK : SIDEBAR_HOVER,
+                        color: active === item.phase ? INK : "rgba(255,255,255,0.7)",
+                        fontFamily: MONO,
+                        fontSize: "0.6rem",
+                        fontWeight: 600,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                      }}
+                    >
+                      {count}
+                    </Box>
+                  )}
+                </ListItemButton>
+              </Box>
+            );
+          })}
+        </List>
+      </Box>
+      <Divider sx={{ borderColor: SIDEBAR_HOVER, mx: 2 }} />
       <Box sx={{ px: 2, py: 2 }}>
         <Stack direction="row" spacing={1.5} sx={{ alignItems: "center" }}>
           <Box
