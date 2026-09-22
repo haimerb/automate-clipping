@@ -53,9 +53,11 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
   const [accounts, setAccounts] = useState<LinkedAccount[]>([]);
   const [draftPlatform, setDraftPlatform] = useState<Record<string, string>>({});
   const [draftAccount, setDraftAccount] = useState<Record<string, string>>({});
-  const [autoPublish, setAutoPublish] = useState(job.auto_publish);
-  const [autoPublishPlatform, setAutoPublishPlatform] = useState(job.auto_publish_platform || "youtube_shorts");
-  const [autoPublishAccount, setAutoPublishAccount] = useState(job.auto_publish_account || "");
+  const [autoPublishOverrides, setAutoPublishOverrides] = useState<{
+    enabled?: boolean;
+    platform?: string;
+    account?: string;
+  }>({});
   const [posts, setPosts] = useState<PlatformPost[]>([]);
   const [doneCount, setDoneCount] = useState(0);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -65,6 +67,10 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
   const [editTags, setEditTags] = useState("");
 
   const selected = clips.filter((c) => c.publish);
+
+  const autoPublish = autoPublishOverrides.enabled ?? job.auto_publish;
+  const autoPublishPlatform = autoPublishOverrides.platform || job.auto_publish_platform || "youtube_shorts";
+  const autoPublishAccount = autoPublishOverrides.account || job.auto_publish_account || "";
 
   async function refreshPosts() {
     try {
@@ -90,12 +96,6 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
       .catch(() => setAccounts([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [job.id]);
-
-  useEffect(() => {
-    setAutoPublish(job.auto_publish);
-    setAutoPublishPlatform(job.auto_publish_platform || "youtube_shorts");
-    setAutoPublishAccount(job.auto_publish_account || "");
-  }, [job.auto_publish, job.auto_publish_platform, job.auto_publish_account]);
 
   const postByDest = useMemo(() => {
     const map: Record<string, PlatformPost> = {};
@@ -163,7 +163,7 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
   }
 
   async function toggleAutoPublish(next: boolean) {
-    setAutoPublish(next);
+    setAutoPublishOverrides((prev) => ({ ...prev, enabled: next }));
     setError(null);
     try {
       const updated = await patchJobSettings(job.id, next, autoPublishPlatform, autoPublishAccount || null);
@@ -187,13 +187,12 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo guardar la configuración");
-      setAutoPublish(job.auto_publish);
+      setAutoPublishOverrides((prev) => ({ ...prev, enabled: job.auto_publish }));
     }
   }
 
   async function updateAutoPublishTarget(platform: string, account: string) {
-    setAutoPublishPlatform(platform);
-    setAutoPublishAccount(account);
+    setAutoPublishOverrides((prev) => ({ ...prev, platform, account }));
     if (autoPublish) {
       try {
         const updated = await patchJobSettings(job.id, true, platform, account || null);

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 
 interface Props {
   seed: string;
@@ -17,7 +17,7 @@ export default function BarWave({ seed, active }: Props) {
   const [bars, setBars] = useState<number[]>([]);
   const ref = useRef<HTMLSpanElement>(null);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const width = ref.current?.clientWidth ?? 320;
     const count = Math.max(24, Math.floor(width / 8));
     const rngState = hash(seed);
@@ -33,7 +33,7 @@ export default function BarWave({ seed, active }: Props) {
   return (
     <span ref={ref} className={`wave${active ? " wave--active" : ""}`} aria-hidden="true">
       {bars.map((h, i) => (
-        <i key={i} style={{ height: `${Math.round(h * 100)}%` }} />
+        <i key={`${seed}-${i}`} style={{ height: `${Math.round(h * 100)}%` }} />
       ))}
     </span>
   );

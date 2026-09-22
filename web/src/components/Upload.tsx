@@ -98,7 +98,7 @@ export default function Upload({ onReady, onOpenJob }: Props) {
     : "Procesando…";
 
   return (
-    <Container maxWidth="lg" sx={{ py: { xs: 5, md: 7 } }}>
+    <Container component="section" maxWidth="lg" sx={{ py: { xs: 5, md: 7 } }}>
       <Box sx={{ mb: 3 }}>
         <Typography variant="overline" sx={{ display: "block" }}>
           Nueva producción

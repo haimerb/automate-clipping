@@ -1,31 +1,38 @@
 import { createTheme } from "@mui/material/styles";
 
-export const EDGE = "#FF0000";
-export const EDGE_SOFT = "rgba(255,0,0,0.06)";
-export const EDGE_DARK = "#CC0000";
-export const MARK = "#FF6B35";
-export const MARK_SOFT = "rgba(255,107,53,0.12)";
-export const SURFACE = "#F1F3F5";
-export const SURFACE_2 = "#E9EDF1";
+export const EDGE = "#1E3A8A";
+export const EDGE_SOFT = "rgba(30,58,138,0.08)";
+export const EDGE_DARK = "#152C6B";
+export const MARK = "#FFC647";
+export const MARK_SOFT = "rgba(255,198,71,0.15)";
+export const SURFACE = "#F5F3EE";
+export const SURFACE_2 = "#EDE9E1";
 export const CARD = "#FFFFFF";
 export const INK = "#14161A";
 export const MUTED = "#69707C";
 export const RAIL = "#D6DBE2";
 export const SIDEBAR_BG = "#0F172A";
 export const SIDEBAR_WIDTH = 256;
+export const SIDEBAR_TEXT = "rgba(255,255,255,0.6)";
+export const SIDEBAR_TEXT_ACTIVE = "#fff";
+export const SIDEBAR_HOVER = "rgba(255,255,255,0.08)";
+export const SIDEBAR_SELECTED = "rgba(255,198,71,0.12)";
+export const SIDEBAR_DISABLED = "rgba(255,255,255,0.25)";
+export const ERROR = "#C43D3D";
+export const SUCCESS = "#1E7A46";
 export const MONO = '"Fragment Mono", ui-monospace, monospace';
 export const SANS = '"Hanken Grotesk", system-ui, sans-serif';
 
 export const theme = createTheme({
   palette: {
     mode: "light",
-    primary: { main: EDGE },
-    secondary: { main: MARK },
+    primary: { main: EDGE, light: "#3B6AD1", dark: EDGE_DARK },
+    secondary: { main: MARK, light: "#FFE08A", dark: "#CC9B2A" },
     background: { default: SURFACE, paper: CARD },
     text: { primary: INK, secondary: MUTED },
     divider: RAIL,
-    error: { main: "#C43D3D" },
-    success: { main: "#1E7A46" },
+    error: { main: ERROR },
+    success: { main: SUCCESS },
   },
   shape: { borderRadius: 3 },
   typography: {
@@ -100,19 +107,19 @@ export const theme = createTheme({
         root: {
           borderRadius: 3,
           borderLeft: "3px solid transparent",
-          color: "rgba(255,255,255,0.6)",
+          color: SIDEBAR_TEXT,
           "&:hover": {
-            backgroundColor: "rgba(255,255,255,0.08)",
-            color: "#fff",
+            backgroundColor: SIDEBAR_HOVER,
+            color: SIDEBAR_TEXT_ACTIVE,
           },
           "&.Mui-selected": {
-            backgroundColor: "rgba(255,107,53,0.12)",
+            backgroundColor: SIDEBAR_SELECTED,
             borderLeftColor: MARK,
-            color: "#fff",
-            "&:hover": { backgroundColor: "rgba(255,107,53,0.18)" },
+            color: SIDEBAR_TEXT_ACTIVE,
+            "&:hover": { backgroundColor: "rgba(255,198,71,0.18)" },
           },
           "&.Mui-disabled": {
-            color: "rgba(255,255,255,0.25)",
+            color: SIDEBAR_DISABLED,
           },
         },
       },
@@ -120,7 +127,7 @@ export const theme = createTheme({
     MuiListItemText: {
       styleOverrides: {
         primary: { color: "inherit" },
-        secondary: { color: "rgba(255,255,255,0.45)" },
+        secondary: { color: SIDEBAR_TEXT },
       },
     },
     MuiCard: {
