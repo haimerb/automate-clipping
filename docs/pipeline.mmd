@@ -1,0 +1,56 @@
+flowchart LR
+    subgraph IN["INGRESAR"]
+        A1["UP (archivo)"] --> J["Job queued"]
+        A2["URL (YouTube/TikTok/etc)"] --> Y["yt-dlp is_downloadable_url"] --> J
+        A3["Generar con IA"] --> J
+    end
+
+    J -->|EDGETAPE_ASYNC_BACKEND=celery| CEL["Celery + Redis broker"]
+    J -.->|inproc/tests| R
+
+    CEL --> W["Worker process_job"]
+    R["local run_job ()"]
+    R --> P
+    W --> P
+
+    subgraph PJ["PIPELINE (process_job)"]
+        P["run_job"] --> SRC{"¿origen existe?"}
+        SRC -->|"youtube/url"| DL["downloading: download_youtube<br/>reintentos 403 player clients"]
+        SRC -->|"upload/generate"| PR["probe_duration"]
+        DL --> PR
+        PR --> TP{"transcriber"}
+        TP -->|"groq whisper-large-v3-turbo"| TX["transcribir"]
+        TP -->|"faster-whisper"| TX
+        TP -->|"mock (crc32 path)"| TX
+        TX --> SEL{"selector clips"}
+        SEL -->|"LLM openai/gpt-oss-20b"| LLS["llm_scorer select_clips_safely<br/>retry 429 + fallback"]
+        SEL -->|"heurístico"| HSC["scorer detect_clips<br/>umbrales adaptativos media+0.25σ<br/>HOOK_WORDS"]
+        LLS -.->|fallback| HSC
+    end
+
+    LLS --> MDT["metadata viral<br/>Groq gpt-oss / LLM / Ollama / heurístico<br/>título 30-60, descripción por secciones ≤350, tags"]
+    HSC --> MDT
+
+    MDT --> C["clips (start/end/duration/score)"]
+    C --> LIM["duración limitada por formato<br/>scorer.FORMAT_LIMITS<br/>shorts 30-60s, reels 30-90s, youtube 30-180s"]
+    LIM --> EXP["export vertical (EDGETAPE_EXPORT_MODE)<br/>vertical_blur 1080x1920"]
+    EXP --> TH["miniaturas virales 9:16<br/>banda #FFC647 + gancho MAYÚSCULAS"]
+    EXP --> SF["storage/{job_id}/<br/>job.json clips.json posts.json"]
+    TH --> SF
+
+    SF -->|owner_id aisla| API["API FastAPI + JWT"]
+
+    API -->|PATCH clip publish=true| AUTO{auto_publish?}
+    AUTO -->|sí| AP["auto_publish_clip<br/>enqueue UploadTask"]
+    AUTO -->|no| PUB["publicar manual"]
+
+    AP --> Q["cola persistente publish_queue.json<br/>reintentos por cuenta + backoff"]
+    PUB --> Q
+
+    Q --> P1["publish_one<br/>export_clip(max_duration=limite formato)"]
+    P1 --> LIM2{"¿cuenta con OAuth válida?"}
+    LIM2 -->|"refresh token 1// + creds"| YT["youtube_publish v3 resumable<br/>+ miniatura custom"]
+    LIM2 -->|"API key o sin creds"| ST["respaldo Studio: post 'listo' + enlace"]
+    YT --> POST["posts.json<br/>status público/listo"]
+    ST --> POST
+    POST --> DASH["/api/dashboard agrega por usuario<br/>views, likes, earnings, cuentas"]
