@@ -106,6 +106,23 @@ def _is_refresh_token(token: str) -> bool:
     return token.startswith("1//")
 
 
+def _extract_yt_error(exc: Exception) -> tuple[int, str]:
+    """Extrae (status_code, reason) de una excepción httpx/API de YouTube."""
+    reason = getattr(exc, "reason", "")
+    status = getattr(exc, "status_code", 0)
+    response = getattr(exc, "response", None)
+    if response is not None:
+        status = getattr(response, "status_code", status)
+        try:
+            body = response.json()
+            errors = ((body or {}).get("error") or {}).get("errors") or []
+            if errors:
+                reason = errors[0].get("reason", reason)
+        except Exception:
+            pass
+    return status, reason
+
+
 async def publish_one(
     store: JobStore,
     job: Job,
@@ -129,6 +146,7 @@ async def publish_one(
     linked = _platform_account(store, job, platform, account)
     token = (linked.token if linked else None) or ""
     creds = yt.creds_for(linked)
+    upload_limit_hit = False
 
     is_youtube = platform in ("youtube_shorts", "youtube")
     if is_youtube and token and _is_refresh_token(token) and creds is not None:
@@ -138,7 +156,18 @@ async def publish_one(
                 tags=clip.tags[:15] if clip.tags else None,
             )
         except Exception as exc:  # noqa: BLE001
-            logger.warning("subida a YouTube falló (%s); usando respaldo", exc)
+            status_code, reason = _extract_yt_error(exc)
+            if status_code == 400 and reason == "uploadLimitExceeded":
+                upload_limit_hit = True
+                from .publish_queue import get_queue_manager
+                get_queue_manager(store).record_upload(
+                    platform, linked.name if linked else account, False, 400,
+                    reason="uploadLimitExceeded",
+                )
+            logger.warning(
+                "subida a YouTube falló (%s %s); usando respaldo",
+                status_code, reason or exc,
+            )
             video = None
         if video:
             thumb_path = _resolve_thumbnail(store, job, clip)
@@ -167,6 +196,11 @@ async def publish_one(
         url=PLATFORM_UPLOAD_URLS.get(platform),
         method="manual",
         account=linked.name if linked else None,
+        error=(
+            "Límite diario del canal alcanzado (uploadLimitExceeded). "
+            "Sube el video manualmente en YouTube Studio o espera a mañana."
+            if upload_limit_hit else None
+        ),
     )
 
 
