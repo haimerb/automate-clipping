@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import os
 import time
 from dataclasses import dataclass, field, asdict
 from enum import Enum
@@ -10,6 +12,8 @@ from typing import Optional
 
 from .storage import JobStore
 from .users import LinkedAccount
+
+logger = logging.getLogger(__name__)
 
 
 class AccountStatus(Enum):
@@ -48,6 +52,7 @@ class AccountQuota:
     quota_reset_at: float = 0
     consecutive_429: int = 0
     consecutive_403: int = 0
+    last_error: str = ""
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -80,6 +85,12 @@ class PublishQueueManager:
 
     def __init__(self, store: JobStore) -> None:
         self.store = store
+        self.MAX_UPLOADS_PER_DAY = int(
+            os.environ.get("EDGETAPE_MAX_UPLOADS_PER_DAY", self.MAX_UPLOADS_PER_DAY)
+        )
+        self.MIN_DELAY_BETWEEN_UPLOADS = int(
+            os.environ.get("EDGETAPE_MIN_UPLOAD_DELAY", self.MIN_DELAY_BETWEEN_UPLOADS)
+        )
         self.queue_file = store.root / "publish_queue.json"
         self.quota_file = store.root / "account_quotas.json"
         self._queue: list[UploadTask] = []
@@ -197,7 +208,10 @@ class PublishQueueManager:
         }
         return mapping.get(platform, "otros")
 
-    def record_upload(self, platform: str, account: str, success: bool, error_code: int = 0) -> None:
+    def record_upload(
+        self, platform: str, account: str, success: bool, error_code: int = 0,
+        reason: str = "",
+    ) -> None:
         key = self._get_quota_key(platform, account)
         quota = self._quotas.get(key) or AccountQuota(account_name=account, platform=platform)
         now = time.time()
@@ -208,6 +222,19 @@ class PublishQueueManager:
             quota.status = AccountStatus.HEALTHY
             quota.consecutive_429 = 0
             quota.consecutive_403 = 0
+            quota.last_error = ""
+        elif error_code == 400 and reason == "uploadLimitExceeded":
+            # Límite diario del CANAL de YouTube alcanzado: pausa 24 h.
+            # Es una restricción de la plataforma, independiente de la cuota del
+            # proyecto de API; solo se resuelve esperando al día siguiente.
+            quota.status = AccountStatus.QUOTA_EXCEEDED
+            quota.quota_reset_at = self._next_midnight_utc()
+            quota.consecutive_403 = 1
+            quota.last_error = "límite diario del canal (uploadLimitExceeded)"
+            logger.warning(
+                "cuenta %s alcanzó el límite diario del canal; pausada hasta %s",
+                account, quota.quota_reset_at,
+            )
         elif error_code == 429:
             quota.consecutive_429 += 1
             quota.status = AccountStatus.RATE_LIMITED
@@ -216,11 +243,13 @@ class PublishQueueManager:
                 self.MAX_BACKOFF_429
             )
             quota.next_retry_at = now + backoff
+            quota.last_error = "rate limited (429)"
         elif error_code == 403:
             quota.consecutive_403 += 1
             if quota.consecutive_403 >= 2:
                 quota.status = AccountStatus.QUOTA_EXCEEDED
                 quota.quota_reset_at = self._next_midnight_utc()
+            quota.last_error = f"quota (403: {quota.consecutive_403}/2)"
 
         self._quotas[key] = quota
         self._save_state()
@@ -273,14 +302,17 @@ class PublishQueueManager:
                         result = await publish_fn(store, job, clip, task.platform, task.account_name)
                         success = result is not None and result.status == "publicado"
                         error_code = 0
+                        reason = ""
                         if not success and hasattr(result, "error"):
                             error_code = getattr(result.error, "status_code", 0) if hasattr(result.error, "status_code") else 0
-                        self.record_upload(task.platform, task.account_name, success, error_code)
+                            reason = getattr(result.error, "reason", "")
+                        self.record_upload(task.platform, task.account_name, success, error_code, reason)
                 except Exception as e:
                     error_code = getattr(e, "response", {}).get("status_code", 0) if hasattr(e, "response") else 0
                     if hasattr(e, "status_code"):
                         error_code = e.status_code
-                    self.record_upload(task.platform, task.account_name, False, error_code)
+                    reason = getattr(e, "reason", "")
+                    self.record_upload(task.platform, task.account_name, False, error_code, reason)
                     task.retries += 1
                     if task.retries <= self.MAX_RETRIES_429:
                         task.next_retry_at = time.time() + (60 * task.retries)

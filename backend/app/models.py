@@ -66,6 +66,7 @@ class PlatformPost(BaseModel):
     currency: str = "USD"
     account: str | None = None
     method: str = "manual"
+    error: str | None = None
     updated_at: str
 
 

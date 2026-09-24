@@ -210,6 +210,129 @@ def test_publish_skips_when_already_published(tmp_path, auth_headers, sample_vid
     assert second is None
 
 
+def _yt_error(status_code: int, reason: str) -> Exception:
+    import httpx
+    request = httpx.Request("POST", "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status")
+    response = httpx.Response(
+        status_code,
+        json={"error": {"errors": [{"reason": reason, "message": "boom"}]}},
+        request=request,
+    )
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        return exc
+    raise AssertionError("debería haber lanzado HTTPStatusError")
+
+
+def test_publish_upload_limit_exceeded_pauses_channel(
+    tmp_path, auth_headers, sample_video, monkeypatch
+) -> None:
+    from app.publish_queue import get_queue_manager, AccountStatus
+
+    qm = get_queue_manager(JobStore(tmp_path / "storage"))
+    qm._quotas.clear()
+    qm._save_state()
+
+    client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
+    client.post(
+        "/api/accounts",
+        json={
+            "platform": "youtube",
+            "name": "Canal Limitado",
+            "handle": "@x",
+            "token": "1//fake_refresh_token",
+            "client_id": "fake_id",
+            "client_secret": "fake_secret",
+        },
+        headers=auth_headers,
+    )
+    monkeypatch.setattr(ytpub, "is_configured", lambda: True)
+
+    async def failing_upload(*args, **kwargs):
+        raise _yt_error(400, "uploadLimitExceeded")
+
+    monkeypatch.setattr(ytpub, "upload_video", failing_upload)
+
+    job = store.get_job(job_id)
+    clip = store.get_clips(job_id)[0]
+    post = asyncio.run(pubmod.publish_one(store, job, clip, account="Canal Limitado"))
+    assert post is not None
+    assert post.status == "listo"
+    assert post.method == "manual"
+    assert post.error is not None
+    assert "uploadLimitExceeded" in post.error
+
+    can, reason = qm.can_upload("youtube_shorts", "Canal Limitado")
+    assert can is False
+    assert reason.startswith("quota_exceeded_until_")
+    quota = qm._quotas.get("youtube_shorts:Canal Limitado")
+    assert quota is not None
+    assert quota.status == AccountStatus.QUOTA_EXCEEDED
+    assert quota.last_error == "límite diario del canal (uploadLimitExceeded)"
+
+
+def test_publish_other_errors_do_not_pause_channel(
+    tmp_path, auth_headers, sample_video, monkeypatch
+) -> None:
+    from app.publish_queue import get_queue_manager, AccountStatus
+
+    qm = get_queue_manager(JobStore(tmp_path / "storage"))
+    qm._quotas.clear()
+    qm._save_state()
+
+    client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
+    client.post(
+        "/api/accounts",
+        json={
+            "platform": "youtube",
+            "name": "Canal Genérico",
+            "handle": "@x",
+            "token": "1//fake_refresh_token",
+            "client_id": "fake_id",
+            "client_secret": "fake_secret",
+        },
+        headers=auth_headers,
+    )
+    monkeypatch.setattr(ytpub, "is_configured", lambda: True)
+
+    async def failing_upload(*args, **kwargs):
+        raise _yt_error(500, "backendError")
+
+    monkeypatch.setattr(ytpub, "upload_video", failing_upload)
+
+    job = store.get_job(job_id)
+    clip = store.get_clips(job_id)[0]
+    post = asyncio.run(pubmod.publish_one(store, job, clip, account="Canal Genérico"))
+    assert post is not None
+    assert post.status == "listo"
+    assert post.error is None
+
+    can, _ = qm.can_upload("youtube_shorts", "Canal Genérico")
+    assert can is True
+    quota = qm._quotas.get("youtube_shorts:Canal Genérico")
+    assert quota is None or quota.status != AccountStatus.QUOTA_EXCEEDED
+
+
+def test_publish_max_uploads_per_day_env(tmp_path, auth_headers, sample_video, monkeypatch) -> None:
+    from app.publish_queue import PublishQueueManager
+
+    monkeypatch.setenv("EDGETAPE_MAX_UPLOADS_PER_DAY", "2")
+    monkeypatch.setenv("EDGETAPE_MIN_UPLOAD_DELAY", "0")
+    qm = PublishQueueManager(JobStore(tmp_path / "storage"))
+    qm._quotas.clear()
+    qm._save_state()
+
+    assert qm.MAX_UPLOADS_PER_DAY == 2
+    assert qm.MIN_DELAY_BETWEEN_UPLOADS == 0
+
+    qm.record_upload("youtube_shorts", "Canal X", True)
+    qm.record_upload("youtube_shorts", "Canal X", True)
+    can, reason = qm.can_upload("youtube_shorts", "Canal X")
+    assert can is False
+    assert reason == "daily_limit_reached"
+
+
 def test_publish_all_only_marked_clips(tmp_path, auth_headers, sample_video, monkeypatch) -> None:
     monkeypatch.setattr(ytpub, "is_configured", lambda: False)
     client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
