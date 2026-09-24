@@ -19,12 +19,21 @@ VIRAL_SYSTEM = (
     "Eres un experto en marketing de contenido viral para YouTube, TikTok y redes sociales. "
     "Generas títulos, descripciones y tags que maximizan views, engagement y shares. "
     "SIEMPRE responde en español. NUNCA uses inglés. "
-    "REGLA CRÍTICA: El título y la descripción DEBEN referirse directamente al contenido específico "
+    "REGLA CRÍTICA 1: El título y la descripción DEBEN referirse directamente al contenido específico "
     "del clip. Analiza qué se dice exactamente en la transcripción y crea metadata que refleje "
     "el tema concreto, no algo genérico. Si alguien dice algo sobre un error de marketing, el título "
-    "debe mencionar el error, no solo decir 'esto cambia todo'. "
-    "La descripción debe resumir el contenido REAL del clip, destacar el punto clave "
-    "y terminar con un call-to-action. NUNCA repitas la transcripción tal cual. "
+    "debe mencionar el error, no solo decir 'esto cambia todo'."
+    "REGLA CRÍTICA 2: BREVEDAD. Los títulos deben tener entre 30 y 60 caracteres "
+    "(gancho + tema concreto, sin relleno). Las descripciones deben ser SINTÉTICAS y "
+    "ORGANIZADAS por secciones en líneas separadas con emojis: "
+    "máximo 2-3 oraciones cortas que resuman el punto clave + un call-to-action en su propia "
+    "línea (con la palomita 👉) + la línea 'Video completo: <URL>' + los hashtags al final "
+    "en su propia línea. TODO en menos de 350 caracteres totales. "
+    "NUNCA copies frases completas de la transcripción; reformula para que se lea rápido "
+    "en un teléfono. "
+    "REGLA CRÍTICA 3: Incluye SIEMPRE al final de la descripción '▶️ Video completo: <URL>' "
+    "si el video original tiene URL, y 6-10 hashtags relevantes de viralidad. " 
+    "NUNCA repitas la transcripción tal cual. "
     "Respondes SOLO con JSON válido, sin texto adicional."
 )
 
@@ -60,7 +69,7 @@ class MetadataGenerator(Protocol):
     name: str
 
     def generate(
-        self, script: str, title_hint: str, duration: float, platform: str
+        self, script: str, title_hint: str, duration: float, platform: str, source_url: str | None = None
     ) -> dict: ...
 
 
@@ -76,9 +85,9 @@ class OllamaMetadataGenerator:
         return f"ollama-metadata-{self.model}"
 
     def generate(
-        self, script: str, title_hint: str, duration: float, platform: str
+        self, script: str, title_hint: str, duration: float, platform: str, source_url: str | None = None
     ) -> dict:
-        prompt = _build_metadata_prompt(script, title_hint, duration, platform)
+        prompt = _build_metadata_prompt(script, title_hint, duration, platform, source_url)
         content = self._complete(prompt)
         return _parse_metadata(content)
 
@@ -117,9 +126,9 @@ class GroqMetadataGenerator:
         return f"groq-metadata-{self.model}"
 
     def generate(
-        self, script: str, title_hint: str, duration: float, platform: str
+        self, script: str, title_hint: str, duration: float, platform: str, source_url: str | None = None
     ) -> dict:
-        prompt = _build_metadata_prompt(script, title_hint, duration, platform)
+        prompt = _build_metadata_prompt(script, title_hint, duration, platform, source_url)
         content = self._complete(prompt)
         return _parse_metadata(content)
 
@@ -175,9 +184,9 @@ class LLMetadataGenerator:
         return f"llm-metadata-{self.model}"
 
     def generate(
-        self, script: str, title_hint: str, duration: float, platform: str
+        self, script: str, title_hint: str, duration: float, platform: str, source_url: str | None = None
     ) -> dict:
-        prompt = _build_metadata_prompt(script, title_hint, duration, platform)
+        prompt = _build_metadata_prompt(script, title_hint, duration, platform, source_url)
         content = self._complete(prompt)
         return _parse_metadata(content)
 
@@ -216,10 +225,10 @@ class HeuristicMetadataGenerator:
     name = "heuristic-metadata"
 
     def generate(
-        self, script: str, title_hint: str, duration: float, platform: str
+        self, script: str, title_hint: str, duration: float, platform: str, source_url: str | None = None
     ) -> dict:
         title = _heuristic_title(script, title_hint)
-        description = _heuristic_description(script, duration)
+        description = _heuristic_description(script, duration, source_url)
         tags = _heuristic_tags(script, platform)
         return {"title": title, "description": description, "tags": tags}
 
@@ -256,13 +265,14 @@ def generate_clip_metadata(
     generator: MetadataGenerator,
     clips: list[dict],
     platform: str = "youtube_shorts",
+    source_url: str | None = None,
 ) -> list[dict]:
     for clip in clips:
         script = clip.get("script", "")
         if not script or len(script.strip()) < 10:
             logger.warning("clip has empty/short script (%d chars), using heuristic", len(script))
             clip["title"] = _heuristic_title(script, clip.get("title", ""))
-            clip["description"] = _heuristic_description(script, clip.get("duration", 30.0))
+            clip["description"] = _heuristic_description(script, clip.get("duration", 30.0), source_url)
             clip["tags"] = _heuristic_tags(script, platform)
             continue
         try:
@@ -274,6 +284,7 @@ def generate_clip_metadata(
                 clip.get("title", ""),
                 clip.get("duration", 30.0),
                 platform,
+                source_url,
             )
             if not meta.get("title") and not meta.get("description"):
                 raise ValueError("LLM returned empty metadata")
@@ -284,13 +295,13 @@ def generate_clip_metadata(
         except Exception as exc:  # noqa: BLE001
             logger.warning("metadata generation FAILED (%s); using HEURISTIC", exc)
             clip["title"] = _heuristic_title(script, clip.get("title", ""))
-            clip["description"] = _heuristic_description(script, clip.get("duration", 30.0))
+            clip["description"] = _heuristic_description(script, clip.get("duration", 30.0), source_url)
             clip["tags"] = _heuristic_tags(script, platform)
             logger.info("heuristic title=%s", clip["title"][:60])
     return clips
 
 
-def _build_metadata_prompt(script: str, title_hint: str, duration: float, platform: str) -> str:
+def _build_metadata_prompt(script: str, title_hint: str, duration: float, platform: str, source_url: str | None = None) -> str:
     platform_names = {
         "youtube_shorts": "YouTube Shorts",
         "youtube": "YouTube",
@@ -300,34 +311,39 @@ def _build_metadata_prompt(script: str, title_hint: str, duration: float, platfo
     }
     pname = platform_names.get(platform, platform)
     max_title = 60 if "short" in platform or "tiktok" in platform or "reels" in platform else 100
+    source_line = f"\nVideo original: {source_url}\n" if source_url else ""
     return (
         f"Plataforma objetivo: {pname}\n"
-        f"Duración del clip: {duration:.0f} segundos\n\n"
+        f"Duración del clip: {duration:.0f} segundos{source_line}\n\n"
         f"Transcripción COMPLETA del clip:\n\"\"\"\n{script[:2500]}\n\"\"\"\n\n"
-        f"Instrucciones (IMPORTANTE: responde SIEMPRE en español):\n\n"
-        f"1. TITLE (máx {max_title} caracteres):\n"
-        f"   - DEBE referirse al contenido ESPECÍFICO de la transcripción\n"
-        f"   - Identifica el tema concreto (ej: si habla de un error de pricing, menciona 'pricing')\n"
-        f"   - Usa ganchos emocionales PERO anclados al contenido real\n"
+        f"Instrucciones (IMPORTANTE: responde SIEMPRE en español y sé BREVE):\n\n"
+        f"1. TITLE ({30}-{max_title} caracteres):\n"
+        f"   - Gancho emocional + tema concreto del clip, SIN relleno\n"
+        f"   - Identifica el tema específico (ej: si habla de un error de pricing, menciona 'pricing')\n"
+        f"   - Debe entenderse perfectamente en el título de un teléfono\n"
         f"   - NO uses títulos genéricos como 'Esto cambia todo' sin contexto\n"
-        f"   - Ejemplos BUENOS: 'El error de pricing que le costó 10k al cliente'\n"
+        f"   - Ejemplos BUENOS: 'El error de pricing que le costó 10k al cliente', 'Nunca hagas esto en un Reel'\n"
         f"   - Ejemplos MALOS: 'No vas a creer lo que pasó' (demasiado genérico)\n\n"
-        f"2. DESCRIPTION (2-3 oraciones):\n"
-        f"   - Resumen de qué se HABLA específicamente en el clip\n"
-        f"   - Destaca el punto clave o enseñanza\n"
-        f"   - Termina con call-to-action (suscríbete, comenta, comparte)\n"
-        f"   - Incluye 2-3 emojis relevantes\n"
-        f"   - NUNCA repitas la transcripción\n\n"
-        f"3. TAGS (8-12 tags trending y relevantes en minúsculas):\n"
-        f"   - Tags específicos del tema (no solo genéricos como 'viral')\n"
-        f"   - Incluye tags de la plataforma\n\n"
+        f"2. DESCRIPTION (máx 350 caracteres, estructura organizada en líneas separadas):\n"
+        f"   - Línea 1: 🔥 + resumen SINTÉTICO y punchy del punto clave del clip (1-2 oraciones)\n"
+        f"   - Línea 2 (opcional): 💡 + un detalle/insight extra concreto\n"
+        f"   - Línea 3: 👉 + call-to-action corto (suscríbete, comenta, comparte)\n"
+        f"   - Línea 4: ▶️ Video completo: {source_url or '[URL]'} (si hay video original)\n"
+        f"   - Línea 5: hashtags (6-10, en minúsculas, incluye #shorts y 2-3 del tema)\n"
+        f"   - Reformula, NUNCA copies frases completas de la transcripción\n"
+        f"   - Máximo 2-3 emojis, usados como separadores de sección\n\n"
+        f"3. TAGS (8-12 tags trending y relevantes, TODOS en minúsculas SIN '#'):\n"
+        f"   - 3-5 tags específicos del tema (no solo genéricos como 'viral')\n"
+        f"   - 2-3 tags de plataforma (#shorts #youtubeshorts #tiktok #reels)\n"
+        f"   - 1-2 tags trending genéricos (#viral #trending #fyp)\n"
+        f"   - Total: 8-12 tags, todos en minúsculas\n\n"
         f"Responde SOLO con JSON:\n"
         f'{{"title": "<título>", "description": "<descripción>", "tags": [<tags>]}}'
     )
 
 
 def _parse_metadata(content: str) -> dict:
-    cleaned = re.sub(r"<think>[\s\S]*?</think>", "", content).strip()
+    cleaned = re.sub(r"```[\s\S]*?```", "", content).strip()
     match = re.search(r"\{[\s\S]*\}", cleaned)
     if not match:
         raise ValueError("no JSON object found in LLM response")
@@ -353,19 +369,25 @@ def _heuristic_title(script: str, hint: str) -> str:
     return title
 
 
-def _heuristic_description(script: str, duration: float) -> str:
+def _heuristic_description(script: str, duration: float, source_url: str | None = None) -> str:
     words = _content_words(script)
     if not words:
-        return f"Clip de {duration:.0f}s #shorts #clip #viral"
-    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", script) if s.strip()]
-    hook = sentences[0][:200] if sentences else " ".join(words[:15])
-    cta = random.choice(_CTA_OPTIONS)
-    return (
-        f"🔥 {hook}\n\n"
-        f"Momento clave de {duration:.0f}s que no te puedes perder.\n"
-        f"{cta}\n\n"
-        f"#shorts #clip #viral #trending"
-    )
+        base = f"Clip de {duration:.0f}s"
+    else:
+        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", script) if s.strip()]
+        hook = sentences[0][:140] if sentences else " ".join(words[:12])
+        idea = " ".join(words[1:9])
+        cta = random.choice(_CTA_OPTIONS)
+        base = (
+            f"🔥 {hook}\n\n"
+            f"💡 {idea} — detalle que marca la diferencia.\n\n"
+            f"👉 {cta}"
+        )
+    if source_url:
+        base += f"\n\n▶️ Video completo: {source_url}"
+    topic_tag = words[0] if words else "contenido"
+    base += f"\n\n#shorts #clip #viral #trending #{topic_tag}"
+    return base
 
 
 def _heuristic_tags(script: str, platform: str) -> list[str]:
