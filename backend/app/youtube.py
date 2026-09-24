@@ -26,6 +26,13 @@ def is_youtube_url(url: str) -> bool:
     return any(domain in url for domain in YT_DOMAINS)
 
 
+def is_downloadable_url(url: str) -> bool:
+    """Acepta cualquier URL http(s): YouTube, Twitch, Zoom, Vimeo, etc.
+    yt-dlp resuelve el extractor correspondiente en tiempo de descarga."""
+    url = (url or "").strip().lower()
+    return url.startswith("http://") or url.startswith("https://")
+
+
 def _build_opts(dest: Path) -> dict:
     opts = {
         "format": "bv*+ba/b",
@@ -69,7 +76,8 @@ def _download_attempt(url: str, dest: Path, extractor_args: dict) -> tuple[str, 
 
 
 async def download_youtube(url: str, dest: Path) -> tuple[str, str | None]:
-    """Download a YouTube video to `dest` (path without extension).
+    """Descarga un video desde `url` (YouTube, Twitch, Zoom, etc.) a `dest`
+    (path sin extensión).
 
     Reintenta con distintos player clients si YouTube bloquea la descarga
     (HTTP 403). yt-dlp se importa de forma perezosa.

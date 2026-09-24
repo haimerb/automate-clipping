@@ -148,10 +148,6 @@ class LinkedAccountCreate(BaseModel):
     redirect_uri: str | None = None
 
 
-class ClipPublish(BaseModel):
-    publish: bool
-
-
 class JobSettings(BaseModel):
     auto_publish: bool = False
     auto_publish_platform: str = "youtube_shorts"

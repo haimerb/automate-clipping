@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 import uuid
 from pathlib import Path
 
@@ -20,7 +21,6 @@ from .llm_scorer import build_clip_selector
 from .media import extract_thumbnail
 from .models import (
     Clip,
-    ClipPublish,
     ClipUpdate,
     DashboardStats,
     GenerateRequest,
@@ -47,7 +47,7 @@ from .storage import JobStore
 from .tasks import enqueue_auto_publish, enqueue_job
 from .transcriber import build_transcriber
 from .users import LinkedAccount, User
-from .youtube import is_youtube_url
+from .youtube import is_downloadable_url, is_youtube_url
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_STORAGE = BACKEND_DIR / "storage"
@@ -239,6 +239,21 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
         )
         return [_account_out(a) for a in accounts]
 
+    @app.get("/api/accounts/{account_id}", response_model=LinkedAccountOut)
+    def get_account(
+        account_id: str,
+        user: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ) -> LinkedAccountOut:
+        account = db.scalar(
+            select(LinkedAccount).where(
+                LinkedAccount.id == account_id, LinkedAccount.user_id == user.id
+            )
+        )
+        if account is None:
+            raise HTTPException(status_code=404, detail="cuenta no encontrada")
+        return _account_out(account)
+
     @app.post("/api/accounts", response_model=LinkedAccountOut, status_code=201)
     def create_account(
         body: LinkedAccountCreate,
@@ -287,12 +302,12 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
         db.refresh(account)
         return _account_out(account)
 
-    @app.delete("/api/accounts/{account_id}", status_code=204)
+    @app.delete("/api/accounts/{account_id}", status_code=204, response_model=None)
     def delete_account(
         account_id: str,
         user: User = Depends(get_current_user),
         db: Session = Depends(get_db),
-    ) -> None:
+    ):
         account = db.scalar(
             select(LinkedAccount).where(
                 LinkedAccount.id == account_id, LinkedAccount.user_id == user.id
@@ -332,12 +347,10 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
         }
         import json
         (job_dir / "generate_meta.json").write_text(json.dumps(meta, ensure_ascii=False))
-        import os as _os
-        if _os.environ.get("EDGETAPE_ASYNC_BACKEND") == "celery":
+        if os.environ.get("EDGETAPE_ASYNC_BACKEND") == "celery":
             enqueue_job(job.id, str(store.root))
         else:
             from .processing import run_job as _run
-            import asyncio as _aio
             await _run(job.id, store, tsc, sel)
         return {"job_id": job.id, "status": "queued"}
 
@@ -421,6 +434,23 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
         enqueue_job(job.id, str(store.root))
         return store.get_job(job.id)  # type: ignore[return-value]
 
+    @app.post("/api/jobs/url", status_code=202, response_model=Job)
+    async def create_url_job(
+        body: YoutubeRequest, user: User = Depends(get_current_user)
+    ) -> Job:
+        """Crea job desde cualquier URL descargable (YouTube, Twitch, Zoom, Vimeo, …).
+
+        yt-dlp resuelve el extractor del sitio en tiempo de descarga.
+        """
+        url = body.url.strip()
+        if not is_downloadable_url(url):
+            raise HTTPException(status_code=400, detail="La URL no es válida (debe ser http/https)")
+        job = store.create_job(
+            "video desde URL", source="url", source_url=url, owner_id=user.id
+        )
+        enqueue_job(job.id, str(store.root))
+        return store.get_job(job.id)  # type: ignore[return-value]
+
     @app.get("/api/jobs", response_model=list[Job])
     def list_jobs(user: User = Depends(get_current_user)) -> list[Job]:
         jobs = store.list_jobs(user.id)
@@ -485,7 +515,6 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
     ) -> list[Clip]:
         """Regenera metadata viral (título, descripción, tags) y miniaturas
         para los clips existentes de un job terminado."""
-        from .media import extract_best_thumbnail
         from .processing import _extract_thumbnails, _infer_platform
         from .viral import build_metadata_generator, generate_clip_metadata
 
@@ -777,22 +806,45 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
             raise HTTPException(status_code=404, detail="post not found")
         return post
 
-    @app.delete("/api/jobs/{job_id}/platforms/{post_id}", status_code=204)
-    def delete_post(job_id: str, post_id: str, user: User = Depends(get_current_user)) -> None:
+    @app.delete("/api/jobs/{job_id}/platforms/{post_id}", status_code=204, response_model=None)
+    def delete_post(job_id: str, post_id: str, user: User = Depends(get_current_user)):
         job = owned_job(job_id, user.id)
         if not store.delete_post(job.id, post_id):
             raise HTTPException(status_code=404, detail="post not found")
 
+    @app.get("/api/jobs/{job_id}/publish-queue")
+    def get_publish_queue(job_id: str, user: User = Depends(get_current_user)) -> dict:
+        job = owned_job(job_id, user.id)
+        from .publish_queue import get_queue_manager
+        qm = get_queue_manager(store)
+        job_tasks = qm.get_pending_for_job(job_id)
+        return {
+                "pending": len(job_tasks),
+                "tasks": [
+                    {
+                        "clip_id": t.clip_id,
+                        "platform": t.platform,
+                        "account": t.account_name,
+                        "retries": t.retries,
+                        "status": "queued" if t.next_retry_at <= time.time() else "waiting",
+                        "next_retry": t.next_retry_at if t.next_retry_at > time.time() else None,
+                    }
+                    for t in job_tasks
+                ],
+                "account_quotas": qm.get_status_summary()["account_quotas"],
+        }
+
+    # ── frontend construido (web/dist) ────────────────
     dist = BACKEND_DIR.parent / "web" / "dist"
-    if dist.exists():
-        app.mount("/", StaticFiles(directory=dist, html=True), name="web")
+    if dist.exists() and dist.is_dir():
+        app.mount("/", StaticFiles(directory=str(dist), html=True), name="web")
     else:
         @app.get("/")
         def root() -> dict:
             return {
                 "name": "ClipForge",
                 "docs": "/docs",
-                "hint": "Frontend no construido. Ejecuta 'cd web && npm run build'.",
+                "hint": "Frontend no construido. Ejecuta 'cd web && pnpm build'.",
             }
 
     return app
