@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from dataclasses import dataclass
 from urllib.parse import urlencode
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -142,10 +145,9 @@ def _upload_sync(
     try:
         resp = c.post(url, json=_metadata(title, description, tags, privacy), headers=headers)
         if resp.status_code >= 400:
-            import logging
-            logging.getLogger(__name__).error(
-                "YouTube upload init failed %s\nResponse: %s\nMetadata: %s",
-                resp.status_code, resp.text[:1000], _metadata(title, description, tags, privacy),
+            logger.error(
+                "YouTube upload init failed %s\nResponse: %s",
+                resp.status_code, resp.text[:1000],
             )
             resp.raise_for_status()
         location = resp.headers["location"]
@@ -207,16 +209,14 @@ def _set_thumbnail_sync(
                 files={"media": ("thumb.jpg", fh, "image/jpeg")},
             )
         if resp.status_code >= 400:
-            import logging
-            logging.getLogger(__name__).warning(
+            logger.warning(
                 "YouTube thumbnail upload failed %s: %s",
                 resp.status_code, resp.text[:300],
             )
             return False
         return True
     except Exception as exc:
-        import logging
-        logging.getLogger(__name__).warning("YouTube thumbnail upload error: %s", exc)
+        logger.warning("YouTube thumbnail upload error: %s", exc)
         return False
     finally:
         if own:
