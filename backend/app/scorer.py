@@ -38,21 +38,21 @@ HOOK_WORDS = {
     "nadie", "nada", "todo", "todos",
 }
 
-TOP_N = 10
-MIN_LEN = 10.0
+TOP_N = 15
+MIN_LEN = 15.0
 
 FORMAT_LIMITS: dict[str, tuple[float, float]] = {
-    "youtube_shorts": (15.0, 58.0),
-    "tiktok": (15.0, 58.0),
-    "facebook_reels": (15.0, 58.0),
-    "instagram_reels": (15.0, 58.0),
-    "youtube": (15.0, 180.0),
-    "otros": (15.0, 120.0),
+    "youtube_shorts": (30.0, 60.0),
+    "tiktok": (15.0, 60.0),
+    "facebook_reels": (30.0, 90.0),
+    "instagram_reels": (30.0, 90.0),
+    "youtube": (30.0, 180.0),
+    "otros": (30.0, 120.0),
 }
 
 
 def _limits_for(platform: str | None) -> tuple[float, float]:
-    return FORMAT_LIMITS.get(platform or "", (6.0, 120.0))
+    return FORMAT_LIMITS.get(platform or "", (15.0, 120.0))
 
 _TOKEN_RE = re.compile(r"[^\W\d_]+")
 
@@ -107,8 +107,8 @@ def detect_clips(
     mean = sum(scores) / len(scores)
     variance = sum((s - mean) ** 2 for s in scores) / len(scores)
     std = variance ** 0.5
-    open_thresh = mean + 0.3 * std
-    extend_thresh = max(0.0, mean - 0.3 * std)
+    open_thresh = mean + 0.25 * std
+    extend_thresh = max(0.0, mean - 0.2 * std)
 
     raw: list[dict] = []
     open_clip: dict | None = None
@@ -133,8 +133,7 @@ def detect_clips(
             continue
         gap = s["start"] - open_clip["end"]
         too_long = (open_clip["end"] - open_clip["start"]) > MAX_LEN
-        # Extend if not too long, even with moderate gaps
-        if too_long or gap > 10.0:
+        if too_long or gap > 8.0:
             close_clip()
             content = set(_content_words(s["text"]))
             has_hook = bool(content & HOOK_WORDS)
@@ -144,7 +143,6 @@ def detect_clips(
                     "texts": [s["text"]],
                 }
             continue
-        # Extend current clip even with weak segments if not too long
         open_clip["end"] = s["end"]
         open_clip["score"] += sc
         open_clip["texts"].append(s["text"])

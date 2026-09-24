@@ -10,7 +10,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from .llm_scorer import build_clip_selector, select_clips_safely
-from .media import cut_clip, extract_best_thumbnail, extract_thumbnail, probe_duration
+from .media import cut_clip, extract_best_thumbnail, extract_thumbnail_with_overlay, probe_duration
 from .models import Clip
 from .scorer import TOP_N
 from .storage import JobStore
@@ -51,7 +51,7 @@ async def _ensure_source(job, store: JobStore):
     source = store.source_path(job.id)
     if source.exists():
         return source
-    
+
     if job.source == "generate":
         job_dir = store.job_dir(job.id)
         meta_path = job_dir / "generate_meta.json"
@@ -64,8 +64,8 @@ async def _ensure_source(job, store: JobStore):
         store.save_job(job)
         await asyncio.to_thread(_create_mock_video, duration, source)
         return source
-    
-    if job.source != "youtube" or not job.source_url:
+
+    if job.source not in ("youtube", "url") or not job.source_url:
         raise RuntimeError("No se encontro el archivo de origen")
     job.status = "downloading"
     job.progress = 8
@@ -84,14 +84,25 @@ def _extract_thumbnails(source: Path, clips: list[Clip], exports_dir: Path) -> N
             thumb_path = exports_dir / thumb_name
             extract_best_thumbnail(source, clip.start, clip.end, thumb_path)
             clip.thumbnail = thumb_name
+
+            viral_name = f"{clip.id}_thumb_viral.jpg"
+            viral_path = exports_dir / viral_name
+            extract_thumbnail_with_overlay(source, clip.start, viral_path, clip.title)
+            if viral_path.exists():
+                clip.thumbnails = [thumb_name, viral_name] + clip.thumbnails
+                clip.thumbnail = viral_name
+                clip.thumbnail_index = 0
         except Exception:
             clip.thumbnail = None
 
 
 def _infer_platform(duration: float, source_url: str | None = None) -> str:
     """Infer the target platform from video duration and source."""
-    if source_url and ("youtube.com/shorts" in source_url or "youtu.be/shorts" in source_url):
+    url = source_url or ""
+    if "youtube.com/shorts" in url or "youtu.be/shorts" in url:
         return "youtube_shorts"
+    if "tiktok.com" in url:
+        return "tiktok"
     if duration <= 65.0:
         return "youtube_shorts"
     return "youtube"
@@ -116,11 +127,13 @@ async def run_job(job_id: str, store: JobStore, transcriber, selector=None) -> N
         platform = _infer_platform(duration, job.source_url)
         job.progress = 45
         store.save_job(job)
-        
+
         if job.source == "generate":
             job_dir = store.job_dir(job.id)
             meta_path = job_dir / "generate_meta.json"
-            meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+            if not meta_path.exists():
+                raise RuntimeError("No se encontro metadata de generación")
+            meta = json.loads(meta_path.read_text())
             prompt = meta.get("prompt", "Video generado con IA")
             platform = meta.get("platform", platform)
             clip_dur = min(duration, 60.0 if "short" in platform or "tiktok" in platform or "reels" in platform else 120.0)
@@ -139,7 +152,7 @@ async def run_job(job_id: str, store: JobStore, transcriber, selector=None) -> N
             ]
             meta_result = generate_clip_metadata(metadata_gen, [
                 {"script": prompt, "title": prompt[:60], "duration": clip_dur}
-            ], platform)
+            ], platform, job.source_url)
             if meta_result:
                 clips[0].title = meta_result[0].get("title", clips[0].title)
                 clips[0].description = meta_result[0].get("description", "")
@@ -185,10 +198,8 @@ async def run_job(job_id: str, store: JobStore, transcriber, selector=None) -> N
 
             job.progress = 70
             store.save_job(job)
-            # Wait before metadata generation to avoid Groq 429 rate limit
-            import time
-            time.sleep(5)
-            found = generate_clip_metadata(metadata_gen, found, platform)
+            await asyncio.sleep(5)
+            found = generate_clip_metadata(metadata_gen, found, platform, job.source_url)
             for c in found:
                 logger.info("  metadata: title=%s desc_len=%d",
                             c.get("title", "")[:50], len(c.get("description", "")))
@@ -228,7 +239,12 @@ async def run_job(job_id: str, store: JobStore, transcriber, selector=None) -> N
     store.save_job(job)
 
 
-async def export_clip(job_id: str, clip_id: str, store: JobStore) -> Clip | None:
+async def export_clip(
+    job_id: str,
+    clip_id: str,
+    store: JobStore,
+    max_duration: float | None = None,
+) -> Clip | None:
     job = store.get_job(job_id)
     if job is None or job.status != "done":
         return None
@@ -236,15 +252,27 @@ async def export_clip(job_id: str, clip_id: str, store: JobStore) -> Clip | None
     if clip is None:
         return None
     if clip.exported and clip.export_name:
-        return clip
+        exports = store.exports_dir(job_id)
+        out = exports / clip.export_name
+        if max_duration is None or max_duration <= 0:
+            return clip
+        try:
+            existing = await asyncio.to_thread(probe_duration, out)
+        except Exception:
+            existing = float("inf")
+        if existing <= max_duration:
+            return clip
 
     exports = store.exports_dir(job_id)
     exports.mkdir(parents=True, exist_ok=True)
     safe = re.sub(r"[^\w.\-]", "_", clip.title).strip("_")[:40] or "clip"
     out = exports / f"{clip.id}_{safe}.mp4"
     mode = os.environ.get("EDGETAPE_EXPORT_MODE", "vertical_blur")
+    end = clip.end
+    if max_duration is not None and max_duration > 0:
+        end = min(end, clip.start + max_duration)
     await asyncio.to_thread(
-        cut_clip, store.source_path(job_id), clip.start, clip.end, out, mode
+        cut_clip, store.source_path(job_id), clip.start, end, out, mode
     )
     return store.update_clip(
         job_id, clip_id, exported=True, export_name=out.name

@@ -198,7 +198,7 @@ def _to_clips(selections: list[dict], windows: list[dict], top_n: int,
 
         seg = _best_segment(window["segs"], quote)
         start = seg["start"]
-        end = min(seg["end"] + 15.0, window["end"])
+        end = min(seg["end"] + 10.0, window["end"])
         for nxt in window["segs"]:
             if nxt["start"] <= seg["end"]:
                 continue
@@ -232,8 +232,11 @@ def _to_clips(selections: list[dict], windows: list[dict], top_n: int,
     merged: list[dict] = []
     for clip in clips:
         if merged and clip["start"] < merged[-1]["end"]:
-            merged[-1]["end"] = max(merged[-1]["end"], clip["end"])
+            merged[-1]["end"] = min(max(merged[-1]["end"], clip["end"]), merged[-1]["start"] + MAX_LEN)
             merged[-1]["duration"] = round(merged[-1]["end"] - merged[-1]["start"], 3)
             continue
         merged.append(clip)
+    for c in merged:
+        c["end"] = min(c["end"], c["start"] + MAX_LEN)
+        c["duration"] = round(c["end"] - c["start"], 3)
     return merged[:top_n]

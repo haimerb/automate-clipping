@@ -1,8 +1,7 @@
 from __future__ import annotations
 
+import asyncio
 import logging
-import re
-import tempfile
 from pathlib import Path
 
 from sqlalchemy import select
@@ -12,6 +11,7 @@ from .db import SessionLocal
 from .media import extract_best_thumbnail
 from .models import Clip, Job, PlatformPost
 from .processing import export_clip
+from .publish_queue import get_queue_manager, UploadTask
 from .storage import JobStore
 from .users import LinkedAccount
 
@@ -19,8 +19,6 @@ logger = logging.getLogger(__name__)
 
 STUDIO_UPLOAD_URL = "https://www.youtube.com/upload"
 
-# Enlace directo de subida por plataforma. Solo YouTube intenta subir por API
-# (con refresh token + credenciales OAuth); el resto usa el respaldo con enlace.
 PLATFORM_UPLOAD_URLS = {
     "youtube_shorts": STUDIO_UPLOAD_URL,
     "youtube": STUDIO_UPLOAD_URL,
@@ -30,7 +28,6 @@ PLATFORM_UPLOAD_URLS = {
     "otros": None,
 }
 
-# platform de publicación -> platform de la cuenta vinculada asociada
 PLATFORM_ACCOUNT_MAP = {
     "youtube_shorts": "youtube",
     "youtube": "youtube",
@@ -44,23 +41,18 @@ PUBLISHED_STATUSES = {"publicado"}
 
 
 def _resolve_thumbnail(store: JobStore, job: Job, clip: Clip) -> Path | None:
-    """Devuelve la ruta a la miniatura del clip. Si no existe, la genera on-the-fly."""
-    # Buscar en exports_dir (donde se genera durante processing)
     if clip.thumbnail:
         p = store.exports_dir(job.id) / clip.thumbnail
         if p.exists():
             return p
-        # También buscar en job_dir/thumbs (endpoint clip_thumb)
         p2 = store.job_dir(job.id) / "thumbs" / clip.thumbnail
         if p2.exists():
             return p2
-    # Buscar por patrón estándar
     for pattern in [f"{clip.id}_thumb.jpg", f"{clip.id}_thumb_0.jpg"]:
         for d in [store.exports_dir(job.id), store.job_dir(job.id) / "thumbs"]:
             p = d / pattern
             if p.exists():
                 return p
-    # Generar on-the-fly si no existe
     source = store.source_path(job.id)
     if not source.exists():
         return None
@@ -84,7 +76,6 @@ def _job_description(clip: Clip) -> str:
 def _platform_account(
     store: JobStore, job: Job, platform: str, account: str | None
 ) -> LinkedAccount | None:
-    """Resuelve la cuenta vinculada para el destino (plataforma + nombre de cuenta)."""
     platform_key = PLATFORM_ACCOUNT_MAP.get(platform, "otros")
     db = SessionLocal()
     try:
@@ -112,8 +103,6 @@ def _already_published(
 
 
 def _is_refresh_token(token: str) -> bool:
-    """Los refresh tokens de Google empiezan por '1//'. Las API keys (AIzaSy…)
-    nunca pueden subir videos, así que se tratan como no conectado."""
     return token.startswith("1//")
 
 
@@ -124,14 +113,14 @@ async def publish_one(
     platform: str = "youtube_shorts",
     account: str | None = None,
 ) -> PlatformPost | None:
-    """Publica un clip: exporta el archivo y, si hay credenciales de YouTube,
-    lo sube de verdad vía la API. Si no, deja un post 'listo' con el enlace
-    directo para subirlo a YouTube Studio."""
     if _already_published(store, job.id, clip.id, platform, account):
         return None
 
     if not (clip.exported and clip.export_name):
-        clip = await export_clip(job.id, clip.id, store)
+        from .scorer import _limits_for
+
+        max_duration = _limits_for(platform)[1]
+        clip = await export_clip(job.id, clip.id, store, max_duration=max_duration)
         if clip is None:
             return None
     path = store.exports_dir(job.id) / clip.export_name
@@ -185,43 +174,119 @@ async def publish_one(
 async def publish_all(
     store: JobStore, job: Job, platform: str = "youtube_shorts", account: str | None = None
 ) -> list[PlatformPost]:
-    """Publica todos los clips marcados (flag publish) del job en paralelo."""
-    import asyncio
+    qm = get_queue_manager(store)
+
+    from .db import SessionLocal
+    from .users import LinkedAccount
+    from sqlalchemy import select
+
+    db = SessionLocal()
+    try:
+        linked_accounts = db.scalars(select(LinkedAccount).where(
+            LinkedAccount.user_id == job.owner_id,
+            LinkedAccount.platform == PLATFORM_ACCOUNT_MAP.get(platform, "otros")
+        )).all()
+    finally:
+        db.close()
 
     marked = [c for c in store.get_clips(job.id) if c.publish]
-    if not marked:
-        return []
+    tasks = []
+    for clip in marked:
+        target_account = account
+        if not target_account:
+            best = qm.get_best_account(platform, linked_accounts)
+            target_account = best.name if best else None
 
-    sem = asyncio.Semaphore(1)  # 1 upload a la vez para evitar rate limit de YouTube
+        if not target_account:
+            store.create_post(job.id, clip.id, platform=platform, status="listo",
+                            url=PLATFORM_UPLOAD_URLS.get(platform), method="manual")
+            continue
 
-    async def _publish_one(clip):
-        async with sem:
-            try:
-                result = await publish_one(store, job, clip, platform, account)
-                # Delay entre uploads para evitar 400/429 de YouTube
-                await asyncio.sleep(30)  # 30 segundos entre uploads
-                return result
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("no se pudo publicar el clip %s: %s", clip.id, exc)
-                return None
+        task = UploadTask(
+            job_id=job.id,
+            clip_id=clip.id,
+            platform=platform,
+            account_name=target_account,
+            priority=clip.index,
+        )
+        tasks.append(task)
 
-    results = await asyncio.gather(*[_publish_one(c) for c in marked])
-    return [p for p in results if p is not None]
+    if tasks:
+        qm.enqueue_many(tasks)
+
+    # In test mode (inproc), process synchronously
+    import os
+    if os.environ.get("EDGETAPE_ASYNC_BACKEND") == "inproc":
+        async def _get_accounts():
+            return linked_accounts
+        await qm.process_queue(store, publish_one, _get_accounts)
+        # Return the created posts
+        created_posts = []
+        for clip in marked:
+            posts = store.get_posts(job.id)
+            for p in posts:
+                if p.clip_id == clip.id and p.platform == platform:
+                    created_posts.append(p)
+        return created_posts
+
+    async def _process():
+        async def _get_accounts():
+            return linked_accounts
+        await qm.process_queue(store, publish_one, _get_accounts)
+
+    asyncio.create_task(_process())
+
+    return []
 
 
 async def auto_publish_clip(
     store: JobStore, job_id: str, clip_id: str,
     platform: str = "youtube_shorts", account: str | None = None,
 ) -> None:
-    """Publicación automática de un clip recién marcado cuando el job tiene
-    auto_publish activado."""
     job = store.get_job(job_id)
     if job is None or not job.auto_publish or job.status != "done":
         return
     clip = next((c for c in store.get_clips(job_id) if c.id == clip_id), None)
     if clip is None or not clip.publish:
         return
+
+    qm = get_queue_manager(store)
+
+    from .db import SessionLocal
+    from .users import LinkedAccount
+    from sqlalchemy import select
+
+    db = SessionLocal()
     try:
-        await publish_one(store, job, clip, platform=platform, account=account)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("publicación automática falló para %s: %s", clip_id, exc)
+        linked_accounts = db.scalars(select(LinkedAccount).where(
+            LinkedAccount.user_id == job.owner_id,
+            LinkedAccount.platform == PLATFORM_ACCOUNT_MAP.get(platform, "otros")
+        )).all()
+    finally:
+        db.close()
+
+    target_account = account
+    if not target_account:
+        best = qm.get_best_account(platform, linked_accounts)
+        target_account = best.name if best else None
+
+    if not target_account:
+        store.create_post(job.id, clip.id, platform=platform, status="listo",
+                        url=PLATFORM_UPLOAD_URLS.get(platform), method="manual")
+        return
+
+    task = UploadTask(
+        job_id=job_id,
+        clip_id=clip_id,
+        platform=platform,
+        account_name=target_account,
+        priority=clip.index,
+    )
+    qm.enqueue(task)
+
+    async def _process():
+        async def _get_accounts():
+            return linked_accounts
+        await qm.process_queue(store, publish_one, _get_accounts)
+
+    await _process()
