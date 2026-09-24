@@ -1,35 +1,24 @@
 import { useEffect, useState } from "react";
-import type { ReactNode } from "react";
 import {
   Box,
   Button,
   Divider,
   Drawer,
   IconButton,
-  List,
-  ListItemButton,
-  ListItemIcon,
-  ListItemText,
   Stack,
   Toolbar,
   Typography,
 } from "@mui/material";
 import MenuRoundedIcon from "@mui/icons-material/MenuRounded";
 import LogoutRoundedIcon from "@mui/icons-material/LogoutRounded";
-import UploadFileRoundedIcon from "@mui/icons-material/UploadFileRounded";
-import MovieFilterRoundedIcon from "@mui/icons-material/MovieFilterRounded";
-import SendRoundedIcon from "@mui/icons-material/SendRounded";
-import AccountBoxRoundedIcon from "@mui/icons-material/AccountBoxRounded";
-import PaidRoundedIcon from "@mui/icons-material/PaidRounded";
-import AutoAwesomeRoundedIcon from "@mui/icons-material/AutoAwesomeRounded";
 import Upload from "./components/Upload";
 import Reel from "./components/Reel";
 import Dashboard from "./components/Dashboard";
-import Accounts from "./components/Accounts";
 import Publish from "./components/Publish";
-import Generate from "./components/Generate";
+import Accounts from "./components/Accounts";
 import Auth from "./components/Auth";
 import ConfirmDialog from "./components/ConfirmDialog";
+import WizardNav from "./components/WizardNav";
 import { getClips, getJob, getMe, getToken, setToken } from "./api";
 import type { Clip, Job, User } from "./api";
 import {
@@ -45,60 +34,20 @@ import {
   SIDEBAR_WIDTH,
 } from "./theme";
 
-type Phase = "upload" | "reel" | "publish" | "generate" | "accounts" | "dashboard";
+type WizardStep = "ingest" | "clips" | "review" | "publish" | "accounts" | "analytics";
 
-interface NavItem {
-  label: string;
-  caption: string;
-  phase: Phase;
-  icon: ReactNode;
-  needsJob?: boolean;
-  needsSelection?: boolean;
-  dividerBefore?: boolean;
-}
+const WIZARD_STEPS: WizardStep[] = ["ingest", "clips", "review", "publish", "accounts", "analytics"];
 
-const NAV: NavItem[] = [
-  {
-    label: "Ingresar",
-    caption: "sube o pega un video",
-    phase: "upload",
-    icon: <UploadFileRoundedIcon fontSize="small" />,
-  },
-  {
-    label: "Clips",
-    caption: "el carrete de momentos",
-    phase: "reel",
-    icon: <MovieFilterRoundedIcon fontSize="small" />,
-    needsJob: true,
-  },
-  {
-    label: "Publicar",
-    caption: "destinos por clip",
-    phase: "publish",
-    icon: <SendRoundedIcon fontSize="small" />,
-    needsJob: true,
-    needsSelection: true,
-  },
-  {
-    label: "Generar",
-    caption: "crear video con IA",
-    phase: "generate",
-    icon: <AutoAwesomeRoundedIcon fontSize="small" />,
-    dividerBefore: true,
-  },
-  {
-    label: "Cuentas",
-    caption: "canales vinculados",
-    phase: "accounts",
-    icon: <AccountBoxRoundedIcon fontSize="small" />,
-  },
-  {
-    label: "Ganancias",
-    caption: "rendimiento por plataforma",
-    phase: "dashboard",
-    icon: <PaidRoundedIcon fontSize="small" />,
-  },
-];
+const STEP_LABELS: Record<WizardStep, string> = {
+  ingest: "Ingresar",
+  clips: "Clips",
+  review: "Revisar",
+  publish: "Publicar",
+  accounts: "Cuentas",
+  analytics: "Ganancias",
+};
+
+const STORAGE_KEY = "edgetape_wizard_state";
 
 function Brand() {
   return (
@@ -112,7 +61,7 @@ function Brand() {
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          boxShadow: `0 2px 8px rgba(255,0,0,0.3)`,
+          boxShadow: `0 2px 8px rgba(30,58,138,0.3)`,
         }}
       >
         <Typography
@@ -157,96 +106,160 @@ function Brand() {
 }
 
 interface SidebarProps {
-  nav: NavItem[];
-  active: Phase;
-  badge: Partial<Record<Phase, number>>;
-  disabled: Partial<Record<Phase, boolean>>;
-  onNavigate: (p: Phase) => void;
+  activeStep: WizardStep;
+  completedSteps: WizardStep[];
+  onStepClick: (step: WizardStep) => void;
   onLogout: () => void;
   user: User;
+  job: Job | null;
+  clipsCount: number;
+  toPublish: number;
 }
 
-function SidebarContent({ nav, active, badge, disabled, onNavigate, onLogout, user }: SidebarProps) {
+function SidebarContent({ activeStep, completedSteps, onStepClick, onLogout, user, job, clipsCount, toPublish }: SidebarProps) {
+  const canGoClips = !!job;
+  const canGoReview = canGoClips && clipsCount > 0;
+  const canGoPublish = canGoReview && toPublish > 0;
+
+  const navItems = [
+    { step: "ingest" as WizardStep, label: "1. INGRESAR", caption: "Sube o pega un video", icon: "📥", disabled: false },
+    { step: "clips" as WizardStep, label: "2. CLIPS", caption: "Detecta momentos clave", icon: "🎬", disabled: !canGoClips },
+    { step: "review" as WizardStep, label: "3. REVISAR", caption: "Edita metadata y thumbnails", icon: "✏️", disabled: !canGoReview },
+    { step: "publish" as WizardStep, label: "4. PUBLICAR", caption: "Configura destinos y publica", icon: "🚀", disabled: !canGoPublish },
+    { step: "accounts" as WizardStep, label: "5. CUENTAS", caption: "Canales vinculados", icon: "🔗", disabled: false },
+    { step: "analytics" as WizardStep, label: "6. GANANCIAS", caption: "Mide tu rendimiento", icon: "📊", disabled: false },
+  ];
+
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <Toolbar sx={{ px: 2.5, gap: 1, minHeight: 72 }}>
         <Brand />
       </Toolbar>
-      <Divider sx={{ borderColor: SIDEBAR_HOVER, mx: 2 }} />
-      <Box component="nav" aria-label="Navegación principal" sx={{ flex: 1, overflow: "auto" }}>
-        <List sx={{ px: 1.5, py: 1 }}>
-          {nav.map((item) => {
-            const disabledHere = disabled[item.phase] === true;
-            const count = badge[item.phase];
-            return (
-              <Box key={item.phase}>
-                {item.dividerBefore && (
-                  <Divider sx={{ borderColor: SIDEBAR_HOVER, my: 1, mx: 1 }} />
-                )}
-                <ListItemButton
-                  selected={active === item.phase}
-                  disabled={disabledHere}
-                  onClick={() => onNavigate(item.phase)}
-                  sx={{ mb: 0.3, py: 1, px: 1.5 }}
-                >
-                  <ListItemIcon
-                    sx={{
-                      minWidth: 32,
-                      color: active === item.phase ? MARK : SIDEBAR_TEXT,
-                    }}
-                  >
-                    {item.icon}
-                  </ListItemIcon>
-                  <ListItemText
-                    primary={item.label}
-                    secondary={item.caption}
-                    slotProps={{
-                      primary: {
-                        sx: {
-                          fontWeight: active === item.phase ? 700 : 500,
-                          fontSize: "0.85rem",
-                          lineHeight: 1.3,
-                          color: disabledHere
-                            ? SIDEBAR_DISABLED
-                            : active === item.phase
-                            ? SIDEBAR_TEXT_ACTIVE
-                            : "rgba(255,255,255,0.75)",
-                        },
-                      },
-                      secondary: {
-                        sx: {
-                          fontSize: "0.62rem",
-                          color: "rgba(255,255,255,0.3)",
-                          lineHeight: 1.3,
-                        },
-                      },
-                    }}
-                  />
-                  {count !== undefined && count > 0 && (
-                    <Box
-                      sx={{
-                        minWidth: 20,
-                        height: 20,
-                        px: 0.5,
-                        borderRadius: 1,
-                        background: active === item.phase ? MARK : SIDEBAR_HOVER,
-                        color: active === item.phase ? INK : "rgba(255,255,255,0.7)",
-                        fontFamily: MONO,
-                        fontSize: "0.6rem",
-                        fontWeight: 600,
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                      }}
-                    >
-                      {count}
-                    </Box>
-                  )}
-                </ListItemButton>
+      <Box component="nav" aria-label="Pasos del asistente" sx={{ flex: 1, overflow: "auto", py: 2, px: 1.5 }}>
+        {navItems.map((item) => {
+          const isCompleted = completedSteps.includes(item.step);
+          const isCurrent = item.step === activeStep;
+
+          return (
+            <Button
+              key={item.step}
+              component="div"
+              fullWidth
+              disabled={item.disabled}
+              onClick={() => !item.disabled && onStepClick(item.step)}
+              sx={{
+                mb: 1.5,
+                py: 1.5,
+                px: 2,
+                borderRadius: 2,
+                textAlign: "left",
+                justifyContent: "flex-start",
+                gap: 1.5,
+                background: isCurrent
+                  ? "linear-gradient(135deg, rgba(30,58,138,0.12) 0%, rgba(255,198,71,0.08) 100%)"
+                  : isCompleted
+                  ? "rgba(255,198,71,0.1)"
+                  : "transparent",
+                border: isCurrent ? `2px solid ${MARK}` : isCompleted ? `1px solid ${MARK}` : `1px solid ${SIDEBAR_HOVER}`,
+                color: item.disabled
+                  ? SIDEBAR_DISABLED
+                  : isCurrent
+                  ? INK
+                  : isCompleted
+                  ? SIDEBAR_TEXT_ACTIVE
+                  : SIDEBAR_TEXT,
+                "&:hover": {
+                  background: item.disabled
+                    ? "transparent"
+                    : isCurrent
+                    ? "linear-gradient(135deg, rgba(30,58,138,0.15) 0%, rgba(255,198,71,0.12) 100%)"
+                    : "rgba(255,198,71,0.08)",
+                  borderColor: isCurrent ? MARK : SIDEBAR_HOVER,
+                },
+                transition: "all 0.2s ease",
+              }}
+            >
+              <Box
+                sx={{
+                  width: 36,
+                  height: 36,
+                  borderRadius: "50%",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: "1.1rem",
+                  flexShrink: 0,
+                  background: isCurrent || isCompleted
+                    ? "linear-gradient(135deg, #1E3A8A 0%, #3B6AD1 100%)"
+                    : item.disabled
+                    ? "rgba(255,255,255,0.05)"
+                    : "rgba(255,255,255,0.08)",
+                  color: isCurrent || isCompleted ? MARK : item.disabled ? SIDEBAR_DISABLED : "rgba(255,255,255,0.4)",
+                  border: isCurrent ? `2px solid ${MARK}` : "none",
+                  boxShadow: isCurrent
+                    ? "0 0 0 4px rgba(255,198,71,0.3), 0 4px 12px rgba(30,58,138,0.3)"
+                    : "none",
+                  transition: "all 0.3s ease",
+                }}
+              >
+                {isCompleted ? "✓" : item.icon}
               </Box>
-            );
-          })}
-        </List>
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                <Typography
+                  sx={{
+                    fontFamily: MONO,
+                    fontSize: "0.58rem",
+                    fontWeight: 700,
+                    letterSpacing: "0.08em",
+                    textTransform: "uppercase",
+                    color: item.disabled ? SIDEBAR_DISABLED : isCurrent ? INK : isCompleted ? SIDEBAR_TEXT_ACTIVE : "rgba(255,255,255,0.6)",
+                    lineHeight: 1.2,
+                    display: "block",
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  }}
+                >
+                  {item.label}
+                </Typography>
+                <Typography
+                  sx={{
+                    fontSize: "0.6rem",
+                    color: item.disabled ? SIDEBAR_DISABLED : isCurrent ? "rgba(255,255,255,0.5)" : "rgba(255,255,255,0.3)",
+                    lineHeight: 1.2,
+                    display: "block",
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  }}
+                >
+                  {item.caption}
+                </Typography>
+              </Box>
+              {(isCompleted || isCurrent) && (
+                <Box
+                  sx={{
+                    width: 24,
+                    height: 24,
+                    borderRadius: "50%",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    background: isCompleted ? MARK : "transparent",
+                    border: isCurrent ? `2px solid ${MARK}` : isCompleted ? "none" : `1px solid ${SIDEBAR_HOVER}`,
+                    color: isCompleted ? INK : MARK,
+                    fontSize: "0.7rem",
+                    fontWeight: 700,
+                    fontFamily: MONO,
+                    flexShrink: 0,
+                  }}
+                >
+                  {isCompleted ? "✓" : isCurrent ? "▸" : ""}
+                </Box>
+              )}
+            </Button>
+          );
+        })}
       </Box>
       <Divider sx={{ borderColor: SIDEBAR_HOVER, mx: 2 }} />
       <Box sx={{ px: 2, py: 2 }}>
@@ -310,17 +323,55 @@ function SidebarContent({ nav, active, badge, disabled, onNavigate, onLogout, us
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
-  const [phase, setPhase] = useState<Phase>("upload");
+  const [step, setStep] = useState<WizardStep>("ingest");
+  const [completedSteps, setCompletedSteps] = useState<WizardStep[]>([]);
   const [job, setJob] = useState<Job | null>(null);
   const [clips, setClips] = useState<Clip[]>([]);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [notReadyAlert, setNotReadyAlert] = useState(false);
 
+  function saveWizardState() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        step,
+        completedSteps,
+        jobId: job?.id,
+      }));
+    } catch {}
+  }
+
+  function loadWizardState(): string | null {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.step && WIZARD_STEPS.includes(parsed.step as WizardStep)) {
+          setStep(parsed.step as WizardStep);
+        }
+        if (Array.isArray(parsed.completedSteps)) {
+          setCompletedSteps(parsed.completedSteps.filter((s: string) => WIZARD_STEPS.includes(s as WizardStep)));
+        }
+        return parsed.jobId;
+      }
+    } catch {}
+    return null;
+  }
+
   useEffect(() => {
     if (!getToken()) return;
+    // Cargar estado del wizard guardado
+    const savedJobId = loadWizardState();
     getMe()
       .then(setUser)
       .catch(() => setToken(null));
+    // Si había un job guardado y estamos en un paso posterior a ingest, intentar cargarlo
+    if (savedJobId) {
+      getJob(savedJobId).then((j) => {
+        if (j.status === "done") {
+          handleReady(j);
+        }
+      }).catch(() => {});
+    }
   }, []);
 
   useEffect(() => {
@@ -329,9 +380,19 @@ export default function App() {
     return () => window.removeEventListener("edgetape:unauthorized", onUnauthorized);
   }, []);
 
+  useEffect(() => {
+    const onNavigate = (e: CustomEvent) => {
+      if (e.detail && WIZARD_STEPS.includes(e.detail)) {
+        goTo(e.detail);
+      }
+    };
+    window.addEventListener("edgetape:navigate", onNavigate as EventListener);
+    return () => window.removeEventListener("edgetape:navigate", onNavigate as EventListener);
+  }, []);
+
   function handleAuth(next: User) {
     setUser(next);
-    goTo("upload");
+    goTo("ingest");
   }
 
   function logout() {
@@ -339,14 +400,23 @@ export default function App() {
     setUser(null);
     setJob(null);
     setClips([]);
-    goTo("upload");
+    setCompletedSteps([]);
+    localStorage.removeItem(STORAGE_KEY);
+    goTo("ingest");
   }
 
   async function handleReady(finished: Job) {
-    const found = await getClips(finished.id);
+    // Reintentar obtener clips si vienen vacíos (race condition job done vs clips guardados)
+    let found: Clip[] = [];
+    for (let i = 0; i < 5; i++) {
+      found = await getClips(finished.id);
+      if (found.length > 0) break;
+      await new Promise(r => setTimeout(r, 500));
+    }
     setClips(found);
     setJob(finished);
-    setPhase("reel");
+    markCompleted("ingest");
+    goTo("clips");
     window.scrollTo({ top: 0 });
   }
 
@@ -359,16 +429,44 @@ export default function App() {
     await handleReady(found);
   }
 
-  function goTo(p: Phase) {
-    setPhase(p);
-    setMobileOpen(false);
-    window.scrollTo({ top: 0 });
+  function markCompleted(stepName: WizardStep) {
+    setCompletedSteps((prev) => {
+      if (prev.includes(stepName)) return prev;
+      const newSteps = [...prev, stepName];
+      return newSteps;
+    });
+    saveWizardState();
+  }
+
+  function goTo(newStep: WizardStep) {
+    const currentIndex = WIZARD_STEPS.indexOf(step);
+    const newIndex = WIZARD_STEPS.indexOf(newStep);
+    // Permitir pasos globales (Cuentas, Ganancias) siempre
+    const isGlobalStep = newStep === "accounts" || newStep === "analytics";
+    if (isGlobalStep || newIndex <= currentIndex || newIndex === currentIndex + 1 || completedSteps.includes(newStep)) {
+      setStep(newStep);
+      saveWizardState();
+      setMobileOpen(false);
+      window.scrollTo({ top: 0 });
+    }
+  }
+
+  function canGoTo(newStep: WizardStep): boolean {
+    const newIndex = WIZARD_STEPS.indexOf(newStep);
+    const currentIndex = WIZARD_STEPS.indexOf(step);
+    // Cuentas y Analytics siempre accesibles (son globales, no dependen de job)
+    const isGlobalStep = newStep === "accounts" || newStep === "analytics";
+    // Permitir: ir hacia atrás, ir al siguiente paso inmediato, ir a pasos globales, o ir a cualquier paso completado
+    const isNextStep = newIndex === currentIndex + 1;
+    return isGlobalStep || newIndex <= currentIndex || isNextStep || completedSteps.includes(newStep);
   }
 
   function handleReset() {
     setJob(null);
     setClips([]);
-    goTo("upload");
+    setCompletedSteps([]);
+    localStorage.removeItem(STORAGE_KEY);
+    goTo("ingest");
   }
 
   function updateClip(updated: Clip) {
@@ -380,26 +478,16 @@ export default function App() {
   }
 
   const toPublish = clips.filter((c) => c.publish).length;
-  const disabled: Partial<Record<Phase, boolean>> = {};
-  const badge: Partial<Record<Phase, number>> = {};
-  for (const item of NAV) {
-    if (item.needsJob && !job) disabled[item.phase] = true;
-    if (item.needsSelection && (!job || toPublish === 0)) disabled[item.phase] = true;
-  }
-  badge.publish = toPublish;
-  badge.reel = job ? clips.length : undefined;
-
-  const sidebarProps: SidebarProps = {
-    nav: NAV,
-    active: phase,
-    badge,
-    disabled,
-    onNavigate: goTo,
+  const sidebarProps = {
+    activeStep: step,
+    completedSteps,
+    onStepClick: (s: WizardStep) => canGoTo(s) && goTo(s),
     onLogout: logout,
     user,
+    job,
+    clipsCount: clips.length,
+    toPublish,
   };
-
-  const sectionTitle = NAV.find((n) => n.phase === phase)?.label ?? "";
 
   return (
     <Box sx={{ display: "flex", minHeight: "100vh" }}>
@@ -451,10 +539,10 @@ export default function App() {
             </IconButton>
             <Box sx={{ minWidth: 0 }}>
               <Typography variant="overline" sx={{ display: "block", fontSize: "0.58rem" }}>
-                Edgetape — panel de trabajo
+                Edgetape — asistente de publicación
               </Typography>
               <Typography variant="h6" sx={{ lineHeight: 1.15, fontSize: "1.05rem" }}>
-                {sectionTitle}
+                {STEP_LABELS[step]}
               </Typography>
             </Box>
             {job && (
@@ -511,35 +599,44 @@ export default function App() {
         </Box>
 
         <Box component="main" sx={{ flex: 1 }}>
-          {phase === "upload" && <Upload onReady={(j) => void handleReady(j)} onOpenJob={openJob} />}
-          {phase === "reel" && job && (
+          <WizardNav
+            currentStep={step}
+            completedSteps={completedSteps}
+            onStepClick={(s) => canGoTo(s) && goTo(s)}
+          />
+
+          {step === "ingest" && <Upload onReady={(j) => void handleReady(j)} onOpenJob={openJob} />}
+          {step === "clips" && job && (
             <Reel
               job={job}
               clips={clips}
               onUpdateClip={updateClip}
-              onGoPublish={() => goTo("publish")}
+              onGoReview={() => { markCompleted("clips"); goTo("review"); }}
               onReset={handleReset}
-              onDashboard={() => goTo("dashboard")}
+              onDashboard={() => { markCompleted("clips"); markCompleted("review"); goTo("analytics"); }}
             />
           )}
-          {phase === "publish" && job && (
+          {step === "review" && job && (
             <Publish
               job={job}
               clips={clips}
               onUpdateClip={updateClip}
-              onBack={() => goTo("reel")}
+              onBack={() => goTo("clips")}
               onJobChange={setJob}
             />
           )}
-          {phase === "generate" && (
-            <Generate
-              onJobReady={(j) => void handleReady(j)}
-              onOpenJob={openJob}
+          {step === "publish" && job && (
+            <Publish
+              job={job}
+              clips={clips}
+              onUpdateClip={updateClip}
+              onBack={() => goTo("review")}
+              onJobChange={setJob}
             />
           )}
-          {phase === "accounts" && <Accounts />}
-          {phase === "dashboard" && (
-            <Dashboard onNewJob={() => goTo("upload")} onOpenJob={(j) => void openJob(j.id)} />
+          {step === "accounts" && <Accounts />}
+          {step === "analytics" && (
+            <Dashboard onNewJob={() => { setCompletedSteps([]); goTo("ingest"); }} onOpenJob={(j) => void openJob(j.id)} />
           )}
         </Box>
 

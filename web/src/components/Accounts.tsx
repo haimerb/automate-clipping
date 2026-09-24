@@ -84,9 +84,12 @@ export default function Accounts() {
     setConnectBusy(account.id);
     setError(null);
     try {
+      console.log("Conectando YouTube para cuenta:", account.id, account.name);
       const { auth_url } = await getYoutubeAuthUrl(account.id);
+      console.log("Auth URL recibida:", auth_url);
       window.location.href = auth_url;
     } catch (err) {
+      console.error("Error conectando YouTube:", err);
       setError(err instanceof Error ? err.message : "No se pudo iniciar la conexión");
       setConnectBusy(null);
     }
@@ -301,7 +304,7 @@ export default function Accounts() {
                         size="small"
                         variant={connected ? "outlined" : "contained"}
                         color={connected ? "inherit" : "primary"}
-                        onClick={() => void connectYoutube(account)}
+                        onClick={() => { console.log("Click Conectar YouTube:", account.id); void connectYoutube(account); }}
                         disabled={connectBusy === account.id}
                         sx={{ alignSelf: "flex-start" }}
                       >

@@ -6,7 +6,6 @@ import {
   Button,
   Chip,
   Container,
-  LinearProgress,
   Stack,
   Tab,
   Table,
@@ -20,16 +19,17 @@ import {
 } from "@mui/material";
 import UploadFileRoundedIcon from "@mui/icons-material/UploadFileRounded";
 import LinkRoundedIcon from "@mui/icons-material/LinkRounded";
-import { uploadFile, createYoutubeJob, pollJob, listJobs, formatDuration } from "../api";
+import { uploadFile, createUrlJob, pollJob, listJobs, formatDuration } from "../api";
 import type { Job } from "../api";
 import { EDGE, INK, MARK, MONO } from "../theme";
+import PipelineProgress from "./PipelineProgress";
 
 interface Props {
   onReady: (job: Job) => void;
   onOpenJob: (jobId: string) => void;
 }
 
-type Source = "file" | "youtube";
+type Source = "file" | "url";
 
 const STATUS_LABEL: Record<string, string> = {
   queued: "En cola",
@@ -85,7 +85,7 @@ export default function Upload({ onReady, onOpenJob }: Props) {
     e.preventDefault();
     const trimmed = url.trim();
     if (!trimmed) return;
-    void process(createYoutubeJob(trimmed), trimmed);
+    void process(createUrlJob(trimmed), trimmed);
   }
 
   const showProgress = busy && job && job.status !== "done";
@@ -107,8 +107,8 @@ export default function Upload({ onReady, onOpenJob }: Props) {
           Procesar una grabación
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mt: 1, maxWidth: "62ch" }}>
-          Sube un archivo o pega una URL de YouTube. Edgetape escanea, detecta los pasajes más
-          fuertes y deja los clips listos para revisar.
+          Sube un archivo o pega una URL (YouTube, Twitch, Zoom…). Edgetape descarga,
+          escanea, detecta los pasajes más fuertes y deja los clips listos para revisar.
         </Typography>
       </Box>
 
@@ -126,8 +126,8 @@ export default function Upload({ onReady, onOpenJob }: Props) {
             disabled={busy}
           />
           <Tab
-            value="youtube"
-            label="YouTube"
+            value="url"
+            label="Enlace"
             icon={<LinkRoundedIcon fontSize="small" />}
             iconPosition="start"
             disabled={busy}
@@ -177,16 +177,9 @@ export default function Upload({ onReady, onOpenJob }: Props) {
             <Button variant="contained" sx={{ mt: 2.5 }} disabled={busy}>
               {busy && label ? statusLabel : "Elegir un archivo"}
             </Button>
-            {showProgress && (
-              <Box sx={{ mt: 3 }}>
-                <LinearProgress variant="determinate" value={job.progress} sx={{ height: 6 }} />
-                <Typography
-                  variant="caption"
-                  color="text.secondary"
-                  sx={{ fontFamily: MONO, mt: 0.5, display: "block" }}
-                >
-                  {job.progress}%
-                </Typography>
+            {showProgress && job && (
+              <Box sx={{ mt: 3, textAlign: "left" }}>
+                <PipelineProgress job={job} />
               </Box>
             )}
           </Box>
@@ -196,12 +189,12 @@ export default function Upload({ onReady, onOpenJob }: Props) {
               Enlace
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 2 }}>
-              Pega una URL de YouTube y ClipForge descarga el video automáticamente.
+              Pega una URL de YouTube, Twitch, Zoom… y ClipForge descarga el video automáticamente.
             </Typography>
             <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
               <TextField
                 fullWidth
-                placeholder="https://www.youtube.com/watch?v=…"
+                placeholder="https://www.youtube.com/watch?v=… o twitch.tv/…"
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
                 disabled={busy}
@@ -215,16 +208,9 @@ export default function Upload({ onReady, onOpenJob }: Props) {
                 {busy ? statusLabel : "Procesar video"}
               </Button>
             </Stack>
-            {showProgress && (
+            {showProgress && job && (
               <Box sx={{ mt: 3 }}>
-                <LinearProgress variant="determinate" value={job.progress} sx={{ height: 6 }} />
-                <Typography
-                  variant="caption"
-                  color="text.secondary"
-                  sx={{ fontFamily: MONO, mt: 0.5, display: "block" }}
-                >
-                  {job.progress}%
-                </Typography>
+                <PipelineProgress job={job} />
               </Box>
             )}
           </Box>
@@ -288,7 +274,7 @@ export default function Upload({ onReady, onOpenJob }: Props) {
                       sx={{ cursor: ready ? "pointer" : "default" }}
                     >
                       <TableCell sx={{ fontWeight: 600 }}>{j.filename}</TableCell>
-                      <TableCell>{j.source === "youtube" ? "YouTube" : "archivo"}</TableCell>
+                      <TableCell>{j.source === "youtube" || j.source === "url" ? "Enlace" : "archivo"}</TableCell>
                       <TableCell align="right" sx={{ fontFamily: MONO, fontSize: "0.78rem" }}>
                         {j.clip_count}
                       </TableCell>

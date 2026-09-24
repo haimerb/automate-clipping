@@ -82,8 +82,8 @@ export default function ClipCard({ jobId, clip, active, onSelect, onTogglePublis
       </Box>
 
       {clip.description && (
-        <Typography variant="body2" color="text.secondary" sx={{ fontSize: "0.75rem", lineHeight: 1.4, mt: -0.5 }}>
-          {clip.description.length > 150 ? clip.description.slice(0, 150) + "…" : clip.description}
+        <Typography variant="body2" color="text.secondary" sx={{ fontSize: "0.75rem", lineHeight: 1.4, mt: -0.5, whiteSpace: "pre-line" }}>
+          {clip.description.length > 350 ? clip.description.slice(0, 350) + "…" : clip.description}
         </Typography>
       )}
 

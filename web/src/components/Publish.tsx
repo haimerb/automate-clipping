@@ -13,6 +13,11 @@ import {
   Select,
   Stack,
   Switch,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableRow,
   TextField,
   Typography,
 } from "@mui/material";
@@ -27,6 +32,7 @@ import {
   getPosts,
   patchJobSettings,
   publishClip,
+  request,
   setClipPublish,
   updateClip,
   updateClipMetadata,
@@ -36,17 +42,24 @@ import ClipPreview from "./ClipPreview";
 import MonetizationPanel from "./MonetizationPanel";
 import { EDGE, INK, MARK, MONO } from "../theme";
 
+interface QueueStatus {
+  pending: number;
+  tasks: Array<{ clip_id: string; platform: string; account: string; retries: number; status: string; next_retry: number | null }>;
+  account_quotas: Record<string, { uploads_today: number; status: string; next_retry: number | null; quota_reset: number | null }>;
+}
+
 interface Props {
   job: Job;
   clips: Clip[];
   onUpdateClip: (clip: Clip) => void;
   onBack: () => void;
   onJobChange: (job: Job) => void;
+  isReviewStep?: boolean;
 }
 
 const DEFAULT_PLATFORM = "youtube_shorts";
 
-export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange }: Props) {
+export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange, isReviewStep = false }: Props) {
   const [busy, setBusy] = useState<string | null>(null);
   const [publishingAll, setPublishingAll] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -65,6 +78,7 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
   const [editTitle, setEditTitle] = useState("");
   const [editDescription, setEditDescription] = useState("");
   const [editTags, setEditTags] = useState("");
+  const [queueStatus, setQueueStatus] = useState<QueueStatus | null>(null);
 
   const selected = clips.filter((c) => c.publish);
 
@@ -77,6 +91,15 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
       setPosts(await getPosts(job.id));
     } catch {
       setPosts([]);
+    }
+  }
+
+  async function refreshQueueStatus() {
+    try {
+      const status = await request<QueueStatus>(`/api/jobs/${job.id}/publish-queue`);
+      setQueueStatus(status);
+    } catch {
+      // ignore
     }
   }
 
@@ -94,8 +117,14 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
         }
       })
       .catch(() => setAccounts([]));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    refreshQueueStatus();
   }, [job.id]);
+
+  useEffect(() => {
+    if (!isReviewStep) return;
+    const interval = setInterval(refreshQueueStatus, 5000);
+    return () => clearInterval(interval);
+  }, [isReviewStep]);
 
   const postByDest = useMemo(() => {
     const map: Record<string, PlatformPost> = {};
@@ -175,6 +204,7 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
           let attempts = 0;
           const poll = setInterval(async () => {
             await refreshPosts();
+            await refreshQueueStatus();
             attempts++;
             if (attempts >= 6) {
               clearInterval(poll);
@@ -211,6 +241,7 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
       const post = await publishClip(job.id, clip.id, dest.platform, dest.account || null);
       if (post) setDoneCount((c) => c + 1);
       await refreshPosts();
+      await refreshQueueStatus();
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo publicar el clip");
     } finally {
@@ -237,6 +268,7 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
     }
     if (errors.length) setError(errors.join("; "));
     await refreshPosts();
+    await refreshQueueStatus();
     setPublishingAll(false);
   }
 
@@ -265,6 +297,24 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
     }
   }
 
+  function getAccountStatusLabel(accountName: string): { label: string; color: "success" | "warning" | "error" | "default" } {
+    if (!queueStatus) return { label: "Desconocido", color: "default" };
+    const quotaKey = Object.keys(queueStatus.account_quotas).find(k => k.endsWith(`:${accountName}`) || k.includes(accountName));
+    if (!quotaKey) return { label: "Sin cola", color: "default" };
+    const quota = queueStatus.account_quotas[quotaKey];
+    switch (quota.status) {
+      case "healthy":
+        return { label: `🟢 ${quota.uploads_today}/${6} hoy`, color: "success" };
+      case "rate_limited":
+        const mins = quota.next_retry ? Math.ceil((quota.next_retry - Date.now() / 1000) / 60) : 0;
+        return { label: `🟡 Rate limited (${mins}m)`, color: "warning" };
+      case "quota_exceeded":
+        return { label: "🔴 Cuota agotada (24h)", color: "error" };
+      default:
+        return { label: "❓ Error", color: "error" };
+    }
+  }
+
   return (
     <Box component="section" sx={{ py: { xs: 5, md: 7 } }}>
       <Container maxWidth="lg">
@@ -274,13 +324,13 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
           sx={{ justifyContent: "space-between", alignItems: { xs: "stretch", md: "flex-end" } }}
         >
           <Box>
-            <Typography variant="overline">Lo que vas a publicar</Typography>
+            <Typography variant="overline">{isReviewStep ? "Paso 3: Revisar y configurar" : "Lo que vas a publicar"}</Typography>
             <Typography variant="h4" sx={{ mt: 0.5 }}>
               {selected.length} {selected.length === 1 ? "clip listo" : "clips listos"}
             </Typography>
           </Box>
           <Button variant="outlined" onClick={onBack} sx={{ alignSelf: { md: "flex-end" } }}>
-            Volver al carrete
+            {isReviewStep ? "Volver a CLIPS" : "Volver al carrete"}
           </Button>
         </Stack>
 
@@ -316,45 +366,47 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
           </Paper>
         ) : (
           <>
-            <Paper sx={{ mt: 4, p: 3, bgcolor: "action.hover" }}>
-              <Stack
-                direction={{ xs: "column", md: "row" }}
-                spacing={2}
-                sx={{ justifyContent: "space-between", alignItems: { xs: "stretch", md: "center" } }}
-              >
-                <Box>
-                  <Typography variant="overline" sx={{ display: "block" }}>
-                    Publicación en bloque
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary" sx={{ maxWidth: "58ch" }}>
-                    Configura en cada tarjeta a qué plataforma y canal publicar cada clip. Un clip
-                    puede ir a varios destinos. Aquí puedes lanzar todos los destinos de una vez.
-                  </Typography>
-                </Box>
-                <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ alignItems: "center" }}>
-                  <Typography
-                    variant="body2"
-                    sx={{ fontFamily: MONO, fontSize: "0.72rem" }}
-                  >
-                    {destCount} {destCount === 1 ? "destino" : "destinos"}
-                  </Typography>
-                  <Button
-                    variant="contained"
-                    onClick={() => void publishAllDestinations()}
-                    disabled={publishingAll || destCount === 0}
-                    startIcon={
-                      publishingAll ? <CircularProgress size={16} color="inherit" /> : undefined
-                    }
-                  >
-                    {publishingAll
-                      ? "Publicando…"
-                      : `Publicar ${destCount} ${destCount === 1 ? "destino" : "destinos"}`}
-                  </Button>
+            {!isReviewStep && (
+              <Paper sx={{ mt: 4, p: 3, bgcolor: "action.hover" }}>
+                <Stack
+                  direction={{ xs: "column", md: "row" }}
+                  spacing={2}
+                  sx={{ justifyContent: "space-between", alignItems: { xs: "stretch", md: "center" } }}
+                >
+                  <Box>
+                    <Typography variant="overline" sx={{ display: "block" }}>
+                      Publicación en bloque
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary" sx={{ maxWidth: "58ch" }}>
+                      Configura en cada tarjeta a qué plataforma y canal publicar cada clip. Un clip
+                      puede ir a varios destinos. Aquí puedes lanzar todos los destinos de una vez.
+                    </Typography>
+                  </Box>
+                  <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ alignItems: "center" }}>
+                    <Typography
+                      variant="body2"
+                      sx={{ fontFamily: MONO, fontSize: "0.72rem" }}
+                    >
+                      {destCount} {destCount === 1 ? "destino" : "destinos"}
+                    </Typography>
+                    <Button
+                      variant="contained"
+                      onClick={() => void publishAllDestinations()}
+                      disabled={publishingAll || destCount === 0}
+                      startIcon={
+                        publishingAll ? <CircularProgress size={16} color="inherit" /> : undefined
+                      }
+                    >
+                      {publishingAll
+                        ? "Publicando…"
+                        : `Publicar ${destCount} ${destCount === 1 ? "destino" : "destinos"}`}
+                    </Button>
+                  </Stack>
                 </Stack>
-              </Stack>
-            </Paper>
+              </Paper>
+            )}
 
-            <Paper sx={{ mt: 2, p: 3 }}>
+            <Paper sx={{ mt: isReviewStep ? 2 : 4, p: 3 }}>
               <Stack
                 direction={{ xs: "column", sm: "row" }}
                 spacing={1.5}
@@ -437,6 +489,58 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
                 </Stack>
               )}
             </Paper>
+
+            {isReviewStep && queueStatus && (
+              <Paper sx={{ mt: 2, p: 2, bgcolor: "action.hover" }}>
+                <Typography variant="overline" sx={{ display: "block" }}>Estado de cola de publicación</Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 1 }}>
+                  {queueStatus.pending} tareas pendientes. Las cuentas rotan automáticamente al agotar cuota.
+                </Typography>
+                <Box sx={{ overflowX: "auto" }}>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Cuenta</TableCell>
+                        <TableCell>Plataforma</TableCell>
+                        <TableCell>Estado</TableCell>
+                        <TableCell>Subidas hoy</TableCell>
+                        <TableCell>Próximo reintento</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {Object.entries(queueStatus.account_quotas).map(([key, quota]) => {
+                        const [platform, account] = key.split(":");
+                        return (
+                          <TableRow key={key}>
+                            <TableCell sx={{ fontWeight: 600 }}>{account}</TableCell>
+                            <TableCell>{PLATFORM_LABELS[platform] ?? platform}</TableCell>
+                            <TableCell>
+                              <Chip
+                                size="small"
+                                label={quota.status === "healthy" ? "🟢 Activa" : quota.status === "rate_limited" ? "🟡 Esperando" : "🔴 Bloqueada"}
+                                variant={quota.status === "healthy" ? "filled" : "outlined"}
+                                sx={{
+                                  bgcolor: quota.status === "healthy" ? "rgba(30,122,70,.08)" : quota.status === "rate_limited" ? "rgba(255,198,71,.15)" : "rgba(196,61,61,.08)",
+                                  color: quota.status === "healthy" ? "#1E7A46" : quota.status === "rate_limited" ? INK : "#C43D3D",
+                                }}
+                              />
+                            </TableCell>
+                            <TableCell>{quota.uploads_today}/6</TableCell>
+                            <TableCell>
+                              {quota.next_retry
+                                ? `${Math.ceil((quota.next_retry - Date.now() / 1000) / 60)} min`
+                                : quota.quota_reset
+                                ? `${Math.ceil((quota.quota_reset - Date.now() / 1000) / 60 / 60)} h`
+                                : "—"}
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                </Box>
+              </Paper>
+            )}
 
             <Stack spacing={3} sx={{ mt: 3 }}>
               {selected.map((clip) => {
@@ -574,6 +678,7 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
                             const post = postByDest[`${clip.id}|${dest.platform}|${dest.account}`];
                             const key = `${clip.id}|${index}`;
                             const busyHere = busy === key;
+                            const accountStatus = getAccountStatusLabel(dest.account);
                             return (
                               <Paper
                                 key={key}
@@ -615,6 +720,16 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
                                         label={POST_STATUS_LABELS[post.status] ?? post.status}
                                       />
                                     )}
+                                    <Chip
+                                      size="small"
+                                      label={accountStatus.label}
+                                      variant="outlined"
+                                      sx={{
+                                        bgcolor: accountStatus.color === "success" ? "rgba(30,122,70,.08)" : accountStatus.color === "warning" ? "rgba(255,198,71,.15)" : "rgba(196,61,61,.08)",
+                                        color: accountStatus.color === "success" ? "#1E7A46" : accountStatus.color === "warning" ? INK : "#C43D3D",
+                                        fontSize: "0.58rem",
+                                      }}
+                                    />
                                   </Stack>
                                   <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
                                     {post?.url && (

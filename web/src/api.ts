@@ -2,7 +2,7 @@ export interface Job {
   id: string;
   filename: string;
   owner_id: string | null;
-  source: "upload" | "youtube" | "generate";
+  source: "upload" | "youtube" | "url" | "generate";
   source_url: string | null;
   status: "queued" | "downloading" | "processing" | "done" | "failed";
   progress: number;
@@ -161,7 +161,7 @@ export function setToken(token: string | null) {
   else localStorage.removeItem(TOKEN_KEY);
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   const token = getToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
@@ -248,6 +248,14 @@ export function uploadFile(file: File): Promise<Job> {
 
 export function createYoutubeJob(url: string): Promise<Job> {
   return request<Job>("/api/jobs/youtube", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+  });
+}
+
+export function createUrlJob(url: string): Promise<Job> {
+  return request<Job>("/api/jobs/url", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ url }),
