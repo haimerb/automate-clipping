@@ -1,0 +1,13 @@
+.git
+.env
+**/__pycache__
+**/*.pyc
+backend/storage
+backend/.venv
+web/node_modules
+web/dist
+*.mp4
+*.mov
+*.wav
+*.mp3
+*.log
