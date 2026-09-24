@@ -20,7 +20,7 @@ interface Props {
   job: Job;
   clips: Clip[];
   onUpdateClip: (clip: Clip) => void;
-  onGoPublish: () => void;
+  onGoReview: () => void;
   onReset: () => void;
   onDashboard: () => void;
 }
@@ -36,7 +36,7 @@ export default function Reel({
   job,
   clips,
   onUpdateClip,
-  onGoPublish,
+  onGoReview,
   onReset,
   onDashboard,
 }: Props) {
@@ -47,7 +47,7 @@ export default function Reel({
 
   const selectedClip = selected ? clips.find((c) => c.id === selected.id) ?? selected : null;
   const toPublish = clips.filter((c) => c.publish).length;
-  const fuente = job.source === "youtube" ? "YouTube" : "archivo";
+  const fuente = job.source === "youtube" || job.source === "url" ? "enlace" : "archivo";
 
   async function onExport(clip: Clip) {
     setBusy(clip.id);
@@ -120,7 +120,7 @@ export default function Reel({
 
         <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
           Detectado automáticamente desde <b>{job.filename}</b>. Toca un clip para revisarlo en
-          detalle.
+          detalle. Marca los que quieras publicar y continua a <b>REVISAR</b>.
         </Typography>
 
         <Stack
@@ -141,13 +141,13 @@ export default function Reel({
           </Button>
           <Button
             variant="contained"
-            onClick={onGoPublish}
+            onClick={onGoReview}
             disabled={toPublish === 0}
             sx={{ alignSelf: { xs: "stretch", sm: "flex-end" } }}
           >
             {toPublish === 0
-              ? "Marca clips para publicar"
-              : `Publicar ${toPublish} ${toPublish === 1 ? "clip" : "clips"} →`}
+              ? "Marca clips para continuar"
+              : `Continuar a REVISAR (${toPublish} ${toPublish === 1 ? "clip" : "clips"}) →`}
           </Button>
         </Stack>
       </Container>
@@ -292,8 +292,8 @@ export default function Reel({
 
       <Container maxWidth="lg" sx={{ py: 4 }}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ justifyContent: "center" }}>
-          <Button variant="contained" onClick={onGoPublish} disabled={toPublish === 0}>
-            {toPublish === 0 ? "Marca clips para publicar" : `Publicar ${toPublish} clips`}
+          <Button variant="contained" onClick={onGoReview} disabled={toPublish === 0}>
+            {toPublish === 0 ? "Marca clips para continuar" : `Continuar a REVISAR (${toPublish} clips)`}
           </Button>
           <Button
             variant="outlined"
