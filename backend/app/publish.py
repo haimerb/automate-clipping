@@ -116,13 +116,12 @@ async def publish_one(
     if _already_published(store, job.id, clip.id, platform, account):
         return None
 
-    if not (clip.exported and clip.export_name):
-        from .scorer import _limits_for
+    from .scorer import _limits_for
 
-        max_duration = _limits_for(platform)[1]
-        clip = await export_clip(job.id, clip.id, store, max_duration=max_duration)
-        if clip is None:
-            return None
+    max_duration = _limits_for(platform)[1]
+    clip = await export_clip(job.id, clip.id, store, max_duration=max_duration)
+    if clip is None:
+        return None
     path = store.exports_dir(job.id) / clip.export_name
     if not path.exists():
         return None
