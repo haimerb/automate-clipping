@@ -54,7 +54,12 @@ def _find_font() -> str:
 
 def _fontfile_arg() -> str:
     font = _find_font()
-    return f"fontfile={font}:" if font else ""
+    if not font:
+        return ""
+    # La ruta va dentro del filtro drawtext: el `:` separa opciones y `\` es
+    # carácter de escape, así que ambos deben escaparse (clave en Windows).
+    escaped = font.replace(":", "\\:").replace("\\", "\\\\")
+    return f"fontfile={escaped}:"
 
 
 def probe_duration(path: str | Path) -> float:
