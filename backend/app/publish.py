@@ -230,6 +230,12 @@ async def publish_all(
             best = qm.get_best_account(platform, linked_accounts)
             target_account = best.name if best else None
 
+        # Si hay cuentas vinculadas pero ninguna disponible ahora mismo
+        # (cooldown / rate-limit / cuota del día), encolamos igualmente con la
+        # primera cuenta: process_queue espera el delay y reintenta.
+        if not target_account and linked_accounts:
+            target_account = linked_accounts[0].name
+
         if not target_account:
             store.create_post(job.id, clip.id, platform=platform, status="listo",
                             url=PLATFORM_UPLOAD_URLS.get(platform), method="manual")
@@ -250,7 +256,7 @@ async def publish_all(
     # In test mode (inproc), process synchronously
     import os
     if os.environ.get("EDGETAPE_ASYNC_BACKEND") == "inproc":
-        async def _get_accounts():
+        def _get_accounts():
             return linked_accounts
         await qm.process_queue(store, publish_one, _get_accounts)
         # Return the created posts
@@ -263,7 +269,7 @@ async def publish_all(
         return created_posts
 
     async def _process():
-        async def _get_accounts():
+        def _get_accounts():
             return linked_accounts
         await qm.process_queue(store, publish_one, _get_accounts)
 
@@ -303,6 +309,11 @@ async def auto_publish_clip(
         best = qm.get_best_account(platform, linked_accounts)
         target_account = best.name if best else None
 
+    # Mismo fix que publish_all: hay cuentas, solo en cooldown → encolar y
+    # dejar que process_queue espere el MIN_DELAY_BETWEEN_UPLOADS.
+    if not target_account and linked_accounts:
+        target_account = linked_accounts[0].name
+
     if not target_account:
         store.create_post(job.id, clip.id, platform=platform, status="listo",
                         url=PLATFORM_UPLOAD_URLS.get(platform), method="manual")
@@ -318,7 +329,7 @@ async def auto_publish_clip(
     qm.enqueue(task)
 
     async def _process():
-        async def _get_accounts():
+        def _get_accounts():
             return linked_accounts
         await qm.process_queue(store, publish_one, _get_accounts)
 
