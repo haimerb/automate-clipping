@@ -41,6 +41,8 @@ from .models import (
     ThumbnailSelect,
     TokenResponse,
     UserOut,
+    BrandingCreate,
+    BrandingInfo,
 )
 from .processing import export_clip
 from .storage import JobStore
@@ -317,6 +319,73 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
             raise HTTPException(status_code=404, detail="cuenta no encontrada")
         db.delete(account)
         db.commit()
+
+    # ── marca del canal (banner + avatar) ────────────
+
+    def _branding_dir(user_id: str) -> Path:
+        return Path(store.root) / "branding" / user_id
+
+    def _branding_info(user_id: str) -> BrandingInfo:
+        bdir = _branding_dir(user_id)
+        meta_path = bdir / "meta.json"
+        meta: dict = {}
+        if meta_path.exists():
+            try:
+                import json as _json
+                meta = _json.loads(meta_path.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                meta = {}
+        return BrandingInfo(
+            channel_name=meta.get("channel_name") or "FUTBOL VIRAL EDITS",
+            tagline=meta.get("tagline") or "",
+            background_url=meta.get("background_url"),
+            created_at=meta.get("created_at"),
+            banner_exists=(bdir / "banner.jpg").exists(),
+            avatar_exists=(bdir / "avatar.png").exists(),
+            banner_url="/api/channel/branding/banner" if (bdir / "banner.jpg").exists() else None,
+            avatar_url="/api/channel/branding/avatar" if (bdir / "avatar.png").exists() else None,
+        )
+
+    @app.post("/api/channel/branding", response_model=BrandingInfo, status_code=201)
+    def generate_branding(
+        body: BrandingCreate, user: User = Depends(get_current_user)
+    ) -> BrandingInfo:
+        from .branding import generate_channel_assets
+
+        bdir = _branding_dir(user.id)
+        bdir.mkdir(parents=True, exist_ok=True)
+        try:
+            meta = generate_channel_assets(
+                bdir,
+                channel_name=body.channel_name,
+                tagline=body.tagline,
+                background_url=body.background_url,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=f"no se pudo generar la marca: {exc}")
+        import json as _json
+        (bdir / "meta.json").write_text(_json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+        return _branding_info(user.id)
+
+    @app.get("/api/channel/branding", response_model=BrandingInfo)
+    def get_branding(user: User = Depends(get_current_user)) -> BrandingInfo:
+        return _branding_info(user.id)
+
+    @app.get("/api/channel/branding/banner")
+    def get_banner(user: User = Depends(get_current_user_media)) -> FileResponse:
+        bdir = _branding_dir(user.id)
+        path = bdir / "banner.jpg"
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="el banner no está generado")
+        return FileResponse(path, media_type="image/jpeg")
+
+    @app.get("/api/channel/branding/avatar")
+    def get_avatar(user: User = Depends(get_current_user_media)) -> FileResponse:
+        bdir = _branding_dir(user.id)
+        path = bdir / "avatar.png"
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="el avatar no está generado")
+        return FileResponse(path, media_type="image/png")
 
     # ── generación con IA ─────────────────────────────
 

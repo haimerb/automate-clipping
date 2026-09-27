@@ -212,3 +212,20 @@ class PublishResult(BaseModel):
     status: str  # "ok" | "error" | "skipped"
     post: PlatformPost | None = None
     error: str | None = None
+
+
+class BrandingCreate(BaseModel):
+    channel_name: str = "FUTBOL VIRAL EDITS"
+    tagline: str = "Resúmenes virales de fútbol"
+    background_url: str | None = None
+
+
+class BrandingInfo(BaseModel):
+    channel_name: str = "FUTBOL VIRAL EDITS"
+    tagline: str = ""
+    background_url: str | None = None
+    created_at: str | None = None
+    banner_exists: bool = False
+    avatar_exists: bool = False
+    banner_url: str | None = None
+    avatar_url: str | None = None

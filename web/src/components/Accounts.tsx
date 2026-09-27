@@ -18,17 +18,11 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import {
-  ACCOUNT_PLATFORM_LABELS,
-  createAccount,
-  deleteAccount,
-  getAccounts,
-  getYoutubeAuthUrl,
-  updateAccount,
-} from "../api";
+import { ACCOUNT_PLATFORM_LABELS, createAccount, deleteAccount, getAccounts, getYoutubeAuthUrl, updateAccount } from "../api";
 import type { AccountInput, LinkedAccount } from "../api";
 import { EDGE, INK, MARK, MONO, SURFACE } from "../theme";
 import ConfirmDialog from "./ConfirmDialog";
+import Branding from "./Branding";
 
 const EMPTY: AccountInput = {
   platform: "youtube",
@@ -461,6 +455,8 @@ export default function Accounts() {
           onConfirm={() => void confirmDelete()}
           onCancel={() => setDeleteConfirm(null)}
         />
+
+        <Branding />
       </Container>
     </Box>
   );
