@@ -134,19 +134,142 @@ class GroqWhisperTranscriber:
         self.api_key = api_key or os.environ.get("EDGETAPE_GROQ_API_KEY")
         self.name = f"groq-whisper-{self.model}"
 
+    MAX_CHUNK_SIZE = 20 * 1024 * 1024  # Groq sube hasta 25 MB por archivo; dejamos margen
+    MAX_CHUNK_SECS = 480.0  # ~8 min a mono 16 kHz ≈ 15 MB, holgado para el límite
+
     def transcribe(self, path: str, duration: float | None = None) -> list[dict]:
+        import subprocess
         import tempfile
+        import time
         from pathlib import Path
 
         url = "https://api.groq.com/openai/v1/audio/transcriptions"
         headers = {"Authorization": f"Bearer {self.api_key}"}
 
         file_path = Path(path)
-        with open(file_path, "rb") as f:
-            files = {"file": (file_path.name, f, "audio/wav")}
-            data = {"model": self.model, "language": "es", "response_format": "verbose_json"}
-            resp = httpx.post(url, headers=headers, files=files, data=data, timeout=120.0)
 
+        # Groq rechaza con 413 audio > 25 MB. Videos de varias horas en WAV lo
+        # superan, así que se extrae el audio a mono/16 kHz (más chico) y si aún
+        # excede el límite se parte en chunks secuenciales re-encadenados.
+        with tempfile.TemporaryDirectory(prefix="edgetape_whisper_") as tmp:
+            wav = os.path.join(tmp, "audio_mono.wav")
+            subprocess.run(
+                ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                 "-i", str(file_path), "-ar", "16000", "-ac", "1",
+                 "-c:a", "pcm_s16le", wav],
+                check=True, capture_output=True,
+            )
+
+            total = duration or self._probe_duration(wav)
+            offsets: list[float] = [0.0]
+            while offsets[-1] < total:
+                offsets.append(offsets[-1] + self.MAX_CHUNK_SECS)
+
+            chunk_segments: list[list[dict]] = []
+            for i, start in enumerate(offsets[:-1]):
+                chunk = os.path.join(tmp, f"chunk_{i:03d}.wav")
+                subprocess.run(
+                    ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                     "-ss", f"{start:.2f}", "-t", f"{self.MAX_CHUNK_SECS:.2f}",
+                     "-i", wav, "-c:a", "pcm_s16le", chunk],
+                    check=True, capture_output=True,
+                )
+                if os.path.getsize(chunk) <= self.MAX_CHUNK_SIZE:
+                    segs = self._transcribe_chunk(url, headers, chunk)
+                else:
+                    # Extremely defensive: si un chunk aún pesa demasiado,
+                    # dividirlo a la mitad secuencialmente.
+                    segs = self._transcribe_splitting(url, headers, chunk, start)
+                chunk_segments.append(segs)
+                time.sleep(1.5)  # respeta el rate limit de ~30 RPM de Groq
+
+        segments: list[dict] = []
+        for i, start in enumerate(offsets[:-1]):
+            for s in chunk_segments[i]:
+                base = s.get("start", 0.0) or 0.0
+                end = s.get("end", 0.0) or 0.0
+                segments.append({
+                    "start": round(start + base, 3),
+                    "end": round(start + end, 3),
+                    "text": s["text"],
+                })
+        rollup: list[dict] = []
+        for s in segments:
+            if s["end"] <= s["start"]:
+                continue
+            if rollup and abs(s["start"] - rollup[-1]["end"]) < 0.3:
+                rollup[-1]["end"] = s["end"]
+                rollup[-1]["text"] += " " + s["text"]
+            else:
+                rollup.append(s)
+        return rollup
+
+    @staticmethod
+    def _probe_duration(wav: str) -> float:
+        import json
+        import subprocess
+        try:
+            r = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "json", wav],
+                check=True, capture_output=True, text=True,
+            )
+            return float(json.loads(r.stdout)["format"]["duration"])
+        except Exception:
+            return 0.0
+
+    def _transcribe_splitting(
+        self, url: str, headers: dict, chunk: str, start_offset: float
+    ) -> list[dict]:
+        import shutil
+        import subprocess
+        import tempfile
+        dur = self._probe_duration(chunk)
+        if dur <= 0:
+            return []
+        mid = dur / 2.0
+        with tempfile.TemporaryDirectory(prefix="edgetape_whisper_split_") as tmp:
+            half_a = os.path.join(tmp, "a.wav")
+            half_b = os.path.join(tmp, "b.wav")
+            for half, ss in ((half_a, 0.0), (half_b, mid)):
+                subprocess.run(
+                    ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                     "-ss", f"{ss:.2f}", "-t", f"{mid:.2f}",
+                     "-i", chunk, "-c:a", "pcm_s16le", half],
+                    check=True, capture_output=True,
+                )
+            out: list[dict] = []
+            if os.path.getsize(half_a) <= self.MAX_CHUNK_SIZE:
+                for s in self._transcribe_chunk(url, headers, half_a):
+                    out.append(s)
+            if os.path.getsize(half_b) <= self.MAX_CHUNK_SIZE:
+                for s in self._transcribe_chunk(url, headers, half_b):
+                    s["start"] = s.get("start", 0.0) + mid
+                    s["end"] = s.get("end", 0.0) + mid
+                    out.append(s)
+            return out
+
+    def _transcribe_chunk(self, url: str, headers: dict, wav_or_bin: str) -> list[dict]:
+        import time
+        from pathlib import Path
+
+        name = str(Path(wav_or_bin).name)
+        resp = None
+        for attempt in range(4):
+            with open(wav_or_bin, "rb") as f:
+                files = {"file": (name, f, "audio/wav")}
+                data = {"model": self.model, "language": "es", "response_format": "verbose_json"}
+                resp = httpx.post(url, headers=headers, files=files, data=data, timeout=180.0)
+            if resp.status_code == 429:
+                delay = 5.0 * (2 ** attempt)
+                time.sleep(delay)
+                continue
+            if resp.status_code in (408, 502, 503, 504):
+                time.sleep(3.0)
+                continue
+            break
+        if resp is None:
+            return []
         resp.raise_for_status()
         result = resp.json()
 

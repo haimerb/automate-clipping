@@ -20,6 +20,8 @@ os.environ["EDGETAPE_OLLAMA_URL"] = "http://127.0.0.1:1"
 os.environ["EDGETAPE_LLM_API_KEY"] = ""
 os.environ["EDGETAPE_LLM_BASE_URL"] = ""
 os.environ["EDGETAPE_LLM_MODEL"] = ""
+# Desactivar Groq (metadata/heurístico y transcripción) — nunca pegar a la API real
+os.environ["EDGETAPE_GROQ_API_KEY"] = ""
 
 from app.main import create_app  # noqa: E402
 
