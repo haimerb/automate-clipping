@@ -176,6 +176,30 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
 
         return store.get_job(job_id)
 
+    @app.get("/api/jobs/{job_id}/task")
+    async def colab_job_task(job_id: str, request: Request) -> dict:
+        """Información mínima del job para Colab/agentes externos (sin JWT).
+
+        Protegido por `EDGETAPE_COLAB_SECRET` si está configurado; expone solo
+        el estado, la URL fuente y el nombre, lo necesario para transcribir.
+        """
+        secret = os.environ.get("EDGETAPE_COLAB_SECRET")
+        if secret:
+            auth_header = request.headers.get("Authorization", "")
+            if auth_header != f"Bearer {secret}":
+                raise HTTPException(status_code=401, detail="Invalid secret")
+
+        job = store.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        return {
+            "job_id": job.id,
+            "status": job.status,
+            "filename": job.filename,
+            "source": job.source,
+            "source_url": job.source_url,
+        }
+
     @app.get("/api/health")
     def health() -> dict:
         try:

@@ -184,8 +184,14 @@ async def run_job(job_id: str, store: JobStore, transcriber, selector=None) -> N
             job.status = "done"
             job.progress = 100
         else:
-            segments = await asyncio.to_thread(transcriber.transcribe, str(source), duration)
-            logger.info("transcribed %d segments, duration=%.1fs", len(segments), duration)
+            trans_path = store.job_dir(job.id) / "transcription.json"
+            colab_transcription = trans_path.exists()
+            if colab_transcription:
+                segments = json.loads(trans_path.read_text(encoding="utf-8"))
+                logger.info("using %d segments from Colab transcription", len(segments))
+            else:
+                segments = await asyncio.to_thread(transcriber.transcribe, str(source), duration)
+                logger.info("transcribed %d segments, duration=%.1fs", len(segments), duration)
 
             job.progress = 60
             store.save_job(job)
@@ -228,7 +234,7 @@ async def run_job(job_id: str, store: JobStore, transcriber, selector=None) -> N
             _extract_thumbnails(source, clips, exports)
             store.save_clips(job_id, clips)
 
-            job.transcriber = transcriber.name
+            job.transcriber = "colab-whisper" if colab_transcription else transcriber.name
             job.scorer = selector.name
             job.clip_count = len(clips)
             job.status = "done"

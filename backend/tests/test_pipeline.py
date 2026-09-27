@@ -168,6 +168,69 @@ def test_full_pipeline_end_to_end(
     assert marked.json()["publish"] is True
 
 
+def test_run_job_uses_preexisting_transcription(
+    sample_video: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, auth_headers
+) -> None:
+    """El flujo Colab: si existe transcription.json, run_job lo usa sin re-transcribir."""
+    from app import main as _main_mod
+    from app.storage import JobStore
+
+    storage = tmp_path / "storage"
+    store = JobStore(storage)
+    app = create_app(storage, MockTranscriber())
+    client = TestClient(app)
+
+    async def fake_download(url, dest):
+        (dest.parent / "source.mp4").write_bytes(sample_video.read_bytes())
+        return str(dest.parent / "source.mp4"), "Video para Colab"
+
+    _orig_enqueue = _main_mod.enqueue_job
+    _main_mod.enqueue_job = lambda *a, **kw: None
+    _orig_dl = run_job.__globals__["download_youtube"]
+    run_job.__globals__["download_youtube"] = fake_download
+
+    class ExplodingTranscriber:
+        """Si run_job llama a transcribe, falla el test."""
+
+        name = "exploding"
+
+        def transcribe(self, path: str, duration: float) -> list[dict]:
+            raise AssertionError("run_job no debe transcribir cuando existe transcription.json")
+
+    try:
+        job = store.create_job(
+            "Video para Colab", source="youtube", source_url="https://youtu.be/abc123"
+        )
+        job_dir = store.job_dir(job.id)
+        segments = [
+            {"start": 0.5, "end": 4.5, "text": "La conclusión clave es que esta fue la decisión más importante."},
+            {"start": 5.0, "end": 9.0, "text": "Esto es lo que nadie te cuenta: la primera versión simplemente fracasó."},
+            {"start": 9.5, "end": 13.5, "text": "El secreto de una buena edición es saber exactamente qué dejar fuera."},
+            {"start": 14.0, "end": 18.0, "text": "Nunca subestimes lo importante que es un buen inicio, porque lo decide todo."},
+            {"start": 18.5, "end": 22.5, "text": "La mejor lección de ese proyecto fue aprender a decir que no a tiempo."},
+            {"start": 23.0, "end": 27.0, "text": "El mayor error que cometimos fue esconder nuestra mejor historia."},
+            {"start": 27.5, "end": 31.5, "text": "La verdad incómoda es que la mayoría abandona antes del tercer video."},
+            {"start": 32.0, "end": 36.0, "text": "Por fin le dijimos la verdad al cliente sobre su idea, y funcionó."},
+            {"start": 36.5, "end": 40.5, "text": "Nadie te dice esto pero la clave no es la calidad del equipo."},
+        ]
+        (job_dir / "transcription.json").write_text(json.dumps(segments), encoding="utf-8")
+
+        asyncio.run(run_job(job.id, store, ExplodingTranscriber()))
+    finally:
+        run_job.__globals__["download_youtube"] = _orig_dl
+        _main_mod.enqueue_job = _orig_enqueue
+
+    job = store.get_job(job.id)
+    assert job is not None and job.status == "done", job.error if job else "job not found"
+    assert job.transcriber == "colab-whisper"
+    assert job.clip_count > 0
+
+    task = client.get(f"/api/jobs/{job.id}/task")
+    assert task.status_code == 200
+    assert task.json()["source_url"] == "https://youtu.be/abc123"
+    assert task.json()["status"] == "done"
+
+
 def test_youtube_job_downloads_and_processes(
     sample_video: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, auth_headers
 ) -> None:
