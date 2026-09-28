@@ -22,6 +22,19 @@ os.environ["EDGETAPE_LLM_BASE_URL"] = ""
 os.environ["EDGETAPE_LLM_MODEL"] = ""
 # Desactivar Groq (metadata/heurístico y transcripción) — nunca pegar a la API real
 os.environ["EDGETAPE_GROQ_API_KEY"] = ""
+# ── Aceleración de tests ─────────────────────────────────────────────
+# Exports sin recorte vertical (boxblur 1080x1920 es el cuello de botella ~360s)
+os.environ["EDGETAPE_EXPORT_MODE"] = "original"
+# Sin pausas deliberadas: metadata y cola de publicación inmediatas
+os.environ["EDGETAPE_METADATA_DELAY"] = "0"
+os.environ["EDGETAPE_QUEUE_TASK_DELAY"] = "0"
+# Sin probe de Ollama (evita timeouts de conexión ~2.5s por test)
+os.environ["EDGETAPE_OLLAMA_PROBE"] = "0"
+# Build_transcriber siempre devuelve el mock (evita cargar faster-whisper)
+os.environ["EDGETAPE_MOCK_TRANSCRIBE"] = "1"
+# Quotas desactivadas: sin límite diario ni delay entre subidas
+os.environ["EDGETAPE_MIN_UPLOAD_DELAY"] = "0"
+os.environ["EDGETAPE_MAX_UPLOADS_PER_DAY"] = "999"
 
 from app.main import create_app  # noqa: E402
 

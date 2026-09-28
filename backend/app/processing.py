@@ -213,7 +213,9 @@ async def run_job(job_id: str, store: JobStore, transcriber, selector=None) -> N
 
             job.progress = 70
             store.save_job(job)
-            await asyncio.sleep(5)
+            delay = float(os.environ.get("EDGETAPE_METADATA_DELAY", 5))
+            if delay > 0:
+                await asyncio.sleep(delay)
             found = generate_clip_metadata(metadata_gen, found, platform, job.source_url)
             for c in found:
                 logger.info("  metadata: title=%s desc_len=%d",
