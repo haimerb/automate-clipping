@@ -826,3 +826,60 @@ def test_publish_instagram_requires_public_url(tmp_path, auth_headers, sample_vi
     assert post.method == "manual"
     assert post.error is not None
     assert "URL pública" in post.error
+
+
+# ── re-evaluar tope diario al subir MAX_UPLOADS_PER_DAY ─────────────────────
+
+
+def test_raise_max_uploads_unblocks_daily_cap(tmp_path) -> None:
+    from app.publish_queue import AccountQuota, AccountStatus, PublishQueueManager
+
+    qm = PublishQueueManager(JobStore(tmp_path / "storage"))
+    qm.MAX_UPLOADS_PER_DAY = 5
+    q = AccountQuota(account_name="Canal", platform="youtube_shorts", uploads_today=5)
+    qm._quotas["youtube_shorts:Canal"] = q
+
+    can, reason = qm.can_upload("youtube_shorts", "Canal")
+    assert not can
+    assert reason == "daily_limit_reached"
+    assert qm._quotas["youtube_shorts:Canal"].status == AccountStatus.QUOTA_EXCEEDED
+
+    qm.MAX_UPLOADS_PER_DAY = 9
+    can, reason = qm.can_upload("youtube_shorts", "Canal")
+    assert can
+    assert reason == "daily_limit_raised"
+    assert qm._quotas["youtube_shorts:Canal"].status == AccountStatus.HEALTHY
+
+
+def test_platform_upload_limit_not_released_by_max(tmp_path) -> None:
+    from app.publish_queue import PublishQueueManager
+
+    qm = PublishQueueManager(JobStore(tmp_path / "storage"))
+    qm.MAX_UPLOADS_PER_DAY = 99
+    qm.record_upload("youtube_shorts", "Canal", False, 400, reason="uploadLimitExceeded")
+
+    can, reason = qm.can_upload("youtube_shorts", "Canal")
+    assert not can
+    assert reason.startswith("quota_exceeded_until_")
+
+
+def test_retry_at_awaits_min_delay_and_backoff(tmp_path) -> None:
+    from app.publish_queue import AccountQuota, AccountStatus, PublishQueueManager
+
+    qm = PublishQueueManager(JobStore(tmp_path / "storage"))
+    qm.MIN_DELAY_BETWEEN_UPLOADS = 120
+
+    q = AccountQuota(account_name="Canal", platform="youtube_shorts", last_upload=1000)
+    assert qm._retry_at_for(q, "min_delay_not_met_120s", 1000) == 1120
+
+    qr = AccountQuota(account_name="Canal", platform="youtube_shorts")
+    qr.status = AccountStatus.RATE_LIMITED
+    qr.next_retry_at = 555
+    assert qm._retry_at_for(qr, "rate_limited", 100) == 555
+
+    qq = AccountQuota(account_name="Canal", platform="youtube_shorts")
+    qq.status = AccountStatus.QUOTA_EXCEEDED
+    qq.quota_reset_at = 9999
+    assert qm._retry_at_for(qq, "quota_exceeded_until_9999", 100) == 9999
+
+    assert qm._retry_at_for(None, "ok", 100) == 400
