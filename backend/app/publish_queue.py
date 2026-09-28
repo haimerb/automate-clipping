@@ -273,6 +273,22 @@ class PublishQueueManager:
         self._queue.sort(key=lambda t: (t.priority, t.created_at))
         self._save_state()
 
+    def _retry_at_for(self, quota: Optional["AccountQuota"], reason: str, now: float) -> float:
+        """Cuándo debe reintentarse un task según el estado de la cuenta.
+
+        Fallback genérico de +300s si no hay cuota, pero si el bloqueo es por
+        min_delay / backoff 429 / reset diario, despertar justo cuando toque.
+        """
+        retry = now + 300
+        if quota is not None:
+            if quota.status == AccountStatus.QUOTA_EXCEEDED:
+                retry = quota.quota_reset_at
+            elif quota.status == AccountStatus.RATE_LIMITED:
+                retry = quota.next_retry_at or retry
+            elif reason.startswith("min_delay"):
+                retry = quota.last_upload + self.MIN_DELAY_BETWEEN_UPLOADS
+        return retry
+
     def get_pending_for_job(self, job_id: str) -> list[UploadTask]:
         return [t for t in self._queue if t.job_id == job_id]
 
@@ -298,9 +314,17 @@ class PublishQueueManager:
                         task.account_name = best.name
                         self._save_state()
                         continue
-                    task.next_retry_at = now + 300
+                    # En vez de un retry genérico de +300s, despertar justo cuando
+                    # la cuenta vuelva a permitir subir (fin del min_delay, del
+                    # backoff de 429 o del reset diario).
+                    quota = self._quotas.get(
+                        self._get_quota_key(task.platform, task.account_name)
+                    )
+                    retry = self._retry_at_for(quota, reason, now)
+                    wait = max(1, min(retry - now, 60))
+                    task.next_retry_at = retry
                     self._save_state()
-                    await asyncio.sleep(60)
+                    await asyncio.sleep(wait)
                     continue
 
                 self._queue.pop(0)
