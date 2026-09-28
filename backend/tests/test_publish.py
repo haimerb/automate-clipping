@@ -655,3 +655,174 @@ def test_youtube_auth_url_uses_account_credentials(
     assert "accounts.google.com" in body["auth_url"]
     assert "account-client-id" in body["auth_url"]
     assert acc_id in body["auth_url"]
+
+
+# ── publicación automática TikTok / Facebook / Instagram ────────────────────
+
+
+def test_publish_tiktok_api_upload(tmp_path, auth_headers, sample_video, job_template, monkeypatch) -> None:
+    from app import tiktok_publish as tkpub
+
+    client, store, job_id = _done_job(tmp_path, job_template)
+    client.post(
+        "/api/accounts",
+        json={
+            "platform": "tiktok",
+            "name": "Mi TikTok API",
+            "handle": "@mi",
+            "token": "SYS.faketoken",
+        },
+        headers=auth_headers,
+    )
+    monkeypatch.setenv("EDGETAPE_TIKTOK_CLIENT_KEY", "client-key-env")
+    monkeypatch.setenv("EDGETAPE_TIKTOK_CLIENT_SECRET", "client-secret-env")
+
+    async def fake_upload(*args, **kwargs):
+        return {"publish_id": "p1", "status": "PUBLISH_COMPLETE", "url": "https://www.tiktok.com/@mi/video/1234"}
+
+    monkeypatch.setattr(tkpub, "upload_video", fake_upload)
+
+    job = store.get_job(job_id)
+    clip = store.get_clips(job_id)[0]
+    post = asyncio.run(pubmod.publish_one(store, job, clip, platform="tiktok", account="Mi TikTok API"))
+    assert post is not None
+    assert post.status == "publicado"
+    assert post.method == "tiktok_api"
+    assert post.url == "https://www.tiktok.com/@mi/video/1234"
+    assert post.account == "Mi TikTok API"
+
+
+def test_publish_tiktok_api_error_falls_back(tmp_path, auth_headers, sample_video, job_template, monkeypatch) -> None:
+    from app import publish_queue
+    from app import tiktok_publish as tkpub
+    from app.publish_queue import get_queue_manager
+
+    qm = get_queue_manager(JobStore(tmp_path / "storage"))
+    qm._quotas.clear()
+    qm._save_state()
+
+    client, store, job_id = _done_job(tmp_path, job_template)
+    client.post(
+        "/api/accounts",
+        json={
+            "platform": "tiktok",
+            "name": "TikTok Con Límite",
+            "handle": "@x",
+            "token": "SYS.faketoken",
+        },
+        headers=auth_headers,
+    )
+    monkeypatch.setenv("EDGETAPE_TIKTOK_CLIENT_KEY", "client-key-env")
+    monkeypatch.setenv("EDGETAPE_TIKTOK_CLIENT_SECRET", "client-secret-env")
+
+    async def failing_upload(*args, **kwargs):
+        raise _yt_error(429, "rate_limit_exceeded")
+
+    monkeypatch.setattr(tkpub, "upload_video", failing_upload)
+
+    job = store.get_job(job_id)
+    clip = store.get_clips(job_id)[0]
+    post = asyncio.run(pubmod.publish_one(store, job, clip, platform="tiktok", account="TikTok Con Límite"))
+    assert post is not None
+    assert post.status == "listo"
+    assert post.method == "manual"
+    assert post.url == "https://www.tiktok.com/upload"
+
+    can, reason = qm.can_upload("tiktok", "TikTok Con Límite")
+    assert can is False
+    assert reason.startswith("rate_limited_until_")
+    quota = qm._quotas.get("tiktok:TikTok Con Límite")
+    assert quota is not None
+    assert quota.status == publish_queue.AccountStatus.RATE_LIMITED
+
+
+def test_publish_facebook_api_upload(tmp_path, auth_headers, sample_video, job_template, monkeypatch) -> None:
+    from app import meta_publish as metapub
+
+    client, store, job_id = _done_job(tmp_path, job_template)
+    client.post(
+        "/api/accounts",
+        json={
+            "platform": "facebook",
+            "name": "Mi Página API",
+            "handle": "123456789",
+            "token": "EAAToken123",
+        },
+        headers=auth_headers,
+    )
+
+    async def fake_fb(*args, **kwargs):
+        return {"id": "vidfb", "url": "https://www.facebook.com/watch/?v=vidfb"}
+
+    monkeypatch.setattr(metapub, "publish_to_facebook", fake_fb)
+
+    job = store.get_job(job_id)
+    clip = store.get_clips(job_id)[0]
+    post = asyncio.run(pubmod.publish_one(store, job, clip, platform="facebook_reels", account="Mi Página API"))
+    assert post is not None
+    assert post.status == "publicado"
+    assert post.method == "meta_api"
+    assert post.url == "https://www.facebook.com/watch/?v=vidfb"
+    assert post.account == "Mi Página API"
+
+
+def test_publish_facebook_api_error_falls_back(tmp_path, auth_headers, sample_video, job_template, monkeypatch) -> None:
+    from app import meta_publish as metapub
+    from app.publish_queue import AccountStatus, get_queue_manager
+
+    qm = get_queue_manager(JobStore(tmp_path / "storage"))
+    qm._quotas.clear()
+    qm._save_state()
+
+    client, store, job_id = _done_job(tmp_path, job_template)
+    client.post(
+        "/api/accounts",
+        json={
+            "platform": "facebook",
+            "name": "Página Con Error",
+            "handle": "123456789",
+            "token": "EAAToken123",
+        },
+        headers=auth_headers,
+    )
+
+    async def failing_fb(*args, **kwargs):
+        raise _yt_error(403, "permissions_error")
+
+    monkeypatch.setattr(metapub, "publish_to_facebook", failing_fb)
+
+    job = store.get_job(job_id)
+    clip = store.get_clips(job_id)[0]
+    post = asyncio.run(pubmod.publish_one(store, job, clip, platform="facebook_reels", account="Página Con Error"))
+    assert post is not None
+    assert post.status == "listo"
+    assert post.method == "manual"
+
+    # un solo 403 no pausa la cuenta (se pausa con 2 consecutivos)
+    can, _ = qm.can_upload("facebook_reels", "Página Con Error")
+    assert can is True
+    quota = qm._quotas.get("facebook_reels:Página Con Error")
+    assert quota is None or quota.status != AccountStatus.QUOTA_EXCEEDED
+
+
+def test_publish_instagram_requires_public_url(tmp_path, auth_headers, sample_video, job_template, monkeypatch) -> None:
+    client, store, job_id = _done_job(tmp_path, job_template)
+    client.post(
+        "/api/accounts",
+        json={
+            "platform": "instagram",
+            "name": "Mi IG",
+            "handle": "17841400000000000",
+            "token": "IGToken123",
+        },
+        headers=auth_headers,
+    )
+
+    job = store.get_job(job_id)
+    clip = store.get_clips(job_id)[0]
+    post = asyncio.run(pubmod.publish_one(store, job, clip, platform="instagram_reels", account="Mi IG"))
+    assert post is not None
+    assert post.status == "listo"
+    assert post.method == "manual"
+    assert post.error is not None
+    assert "URL pública" in post.error

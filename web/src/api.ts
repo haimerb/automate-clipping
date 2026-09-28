@@ -598,6 +598,8 @@ export const POST_STATUS_LABELS: Record<string, string> = {
 export const POST_METHOD_LABELS: Record<string, string> = {
   manual: "subido a mano",
   youtube_api: "subido por la API",
+  tiktok_api: "subido por la API",
+  meta_api: "subido por la API",
 };
 
 export const ACCOUNT_PLATFORM_LABELS: Record<string, string> = {
