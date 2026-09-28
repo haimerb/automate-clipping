@@ -294,7 +294,22 @@ def test_generate_source_respects_meta_prompt(
     store, job_id, _ = _run_generate_job(tmp_path, user_id, monkeypatch)
     clips = store.get_clips(job_id)
     assert clips
-    assert clips[0].script.strip() == " ".join(PROMPT.split())
+    script = clips[0].script.strip()
+    # sin LLM, el fallback expande el prompt a un guion con la frase del tema
+    assert len(script) > 80
+    assert len(clips[0].line or "") > 0
+    assert clips[0].exported and clips[0].export_name
+
+
+def test_ai_generate_fallback_script_scales_with_duration() -> None:
+    """El fallback determinístico cubre la duración (por si el LLM no está)."""
+    short = aig._fallback_script("una frase breve", 30)
+    long = aig._fallback_script("La mejor época de Boca Juniors", 900)
+    assert len(long["sentences"]) <= aig.SCENES_MAX_SENTENCES
+    assert 90 <= len(long["script"].split()) <= 9 * 900
+    assert long["sentences"] and long["title"]
+    assert len(short["sentences"]) <= len(long["sentences"])
+    assert "Boca Juniors" in long["title"]
 
 
 def test_ai_generate_size_for() -> None:
