@@ -7,6 +7,8 @@ from pathlib import Path
 from sqlalchemy import select
 
 from . import youtube_publish as yt
+from . import meta_publish as meta
+from . import tiktok_publish as tiktok_pub
 from .db import SessionLocal
 from .media import extract_best_thumbnail
 from .models import Clip, Job, PlatformPost
@@ -106,8 +108,8 @@ def _is_refresh_token(token: str) -> bool:
     return token.startswith("1//")
 
 
-def _extract_yt_error(exc: Exception) -> tuple[int, str]:
-    """Extrae (status_code, reason) de una excepción httpx/API de YouTube."""
+def _extract_api_error(exc: Exception) -> tuple[int, str]:
+    """Extrae (status_code, reason) de una excepción httpx/API (de cualquier plataforma)."""
     reason = getattr(exc, "reason", "")
     status = getattr(exc, "status_code", 0)
     response = getattr(exc, "response", None)
@@ -121,6 +123,20 @@ def _extract_yt_error(exc: Exception) -> tuple[int, str]:
         except Exception:
             pass
     return status, reason
+
+
+def _notify_upload_failure(
+    store: JobStore, platform: str, account_name: str | None, status_code: int, reason: str
+) -> None:
+    """Registra fallos relevantes (rate-limit/cuota) en la cola persistente para
+    que la rotación y el backoff funcionen igual que con YouTube."""
+    if not account_name:
+        return
+    if status_code in (400, 429, 403) and reason:
+        from .publish_queue import get_queue_manager
+        get_queue_manager(store).record_upload(
+            platform, account_name, False, status_code, reason=reason
+        )
 
 
 async def publish_one(
@@ -156,7 +172,7 @@ async def publish_one(
                 tags=clip.tags[:15] if clip.tags else None,
             )
         except Exception as exc:  # noqa: BLE001
-            status_code, reason = _extract_yt_error(exc)
+            status_code, reason = _extract_api_error(exc)
             if status_code == 400 and reason == "uploadLimitExceeded":
                 upload_limit_hit = True
                 from .publish_queue import get_queue_manager
@@ -189,17 +205,90 @@ async def publish_one(
                 account=linked.name if linked else None,
             )
 
+    account_name = linked.name if linked else None
+
+    # ── TikTok (Content Posting API) ──────────────────────────────────────
+    if platform == "tiktok" and token and not token.startswith("1//"):
+        tkcreds = tiktok_pub.creds_for(linked)
+        if tkcreds is not None:
+            try:
+                tk_result = await tiktok_pub.upload_video(
+                    str(path), clip.title, _job_description(clip), token, tkcreds
+                )
+            except Exception as exc:  # noqa: BLE001
+                status_code, reason = _extract_api_error(exc)
+                _notify_upload_failure(store, platform, account_name, status_code, reason)
+                logger.warning(
+                    "subida a TikTok falló (%s %s); usando respaldo",
+                    status_code, reason or exc,
+                )
+                tk_result = None
+            if tk_result:
+                from .publish_queue import get_queue_manager
+                get_queue_manager(store).record_upload(platform, account_name, True)
+                return store.create_post(
+                    job.id, clip.id,
+                    platform=platform,
+                    status="publicado",
+                    url=tk_result.get("url"),
+                    method="tiktok_api",
+                    account=account_name,
+                )
+
+    # ── Facebook / Instagram (Graph API) ──────────────────────────────────
+    if platform in ("facebook_reels", "instagram_reels"):
+        target_id = (linked.handle if linked else None) or None
+        manual_error = None
+        if token and target_id:
+            try:
+                if platform == "facebook_reels":
+                    meta_result = await meta.publish_to_facebook(
+                        target_id, token, str(path), clip.title, _job_description(clip)
+                    )
+                    manual_error = None
+                else:
+                    meta_result = await meta.publish_to_instagram(
+                        target_id, token, None, clip.title
+                    )
+                    if meta_result is None:
+                        manual_error = (
+                            "Instagram requiere una URL pública del video (video_url) "
+                            "accesible por los servidores de Meta para crear el Reel; "
+                            "sube el clip manualmente desde la app."
+                        )
+            except Exception as exc:  # noqa: BLE001
+                status_code, reason = _extract_api_error(exc)
+                _notify_upload_failure(store, platform, account_name, status_code, reason)
+                logger.warning(
+                    "subida a %s falló (%s %s); usando respaldo",
+                    platform, status_code, reason or exc,
+                )
+                meta_result = None
+            if meta_result:
+                from .publish_queue import get_queue_manager
+                get_queue_manager(store).record_upload(platform, account_name, True)
+                return store.create_post(
+                    job.id, clip.id,
+                    platform=platform,
+                    status="publicado",
+                    url=meta_result.get("url"),
+                    method="meta_api",
+                    account=account_name,
+                )
+    else:
+        manual_error = None
+
     return store.create_post(
         job.id, clip.id,
         platform=platform,
         status="listo",
         url=PLATFORM_UPLOAD_URLS.get(platform),
         method="manual",
-        account=linked.name if linked else None,
+        account=account_name,
         error=(
             "Límite diario del canal alcanzado (uploadLimitExceeded). "
             "Sube el video manualmente en YouTube Studio o espera a mañana."
-            if upload_limit_hit else None
+            if upload_limit_hit else manual_error
         ),
     )
 

@@ -18,11 +18,9 @@ import {
   TableCell,
   TableHead,
   TableRow,
-  TextField,
   Typography,
 } from "@mui/material";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
-import EditRoundedIcon from "@mui/icons-material/EditRounded";
 import {
   PLATFORM_LABELS,
   POST_STATUS_LABELS,
@@ -35,12 +33,11 @@ import {
   request,
   setClipPublish,
   updateClip,
-  updateClipMetadata,
 } from "../api";
 import type { Clip, Destination, Job, LinkedAccount, PlatformPost } from "../api";
 import ClipPreview from "./ClipPreview";
 import MonetizationPanel from "./MonetizationPanel";
-import { EDGE, INK, MARK, MONO } from "../theme";
+import { EDGE, MARK, MONO, ON_ACCENT } from "../theme";
 
 interface QueueStatus {
   pending: number;
@@ -54,12 +51,11 @@ interface Props {
   onUpdateClip: (clip: Clip) => void;
   onBack: () => void;
   onJobChange: (job: Job) => void;
-  isReviewStep?: boolean;
 }
 
 const DEFAULT_PLATFORM = "youtube_shorts";
 
-export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange, isReviewStep = false }: Props) {
+export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange }: Props) {
   const [busy, setBusy] = useState<string | null>(null);
   const [publishingAll, setPublishingAll] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -74,10 +70,6 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange,
   const [posts, setPosts] = useState<PlatformPost[]>([]);
   const [doneCount, setDoneCount] = useState(0);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
-  const [editingClip, setEditingClip] = useState<string | null>(null);
-  const [editTitle, setEditTitle] = useState("");
-  const [editDescription, setEditDescription] = useState("");
-  const [editTags, setEditTags] = useState("");
   const [queueStatus, setQueueStatus] = useState<QueueStatus | null>(null);
 
   const selected = clips.filter((c) => c.publish);
@@ -121,10 +113,9 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange,
   }, [job.id]);
 
   useEffect(() => {
-    if (!isReviewStep) return;
     const interval = setInterval(refreshQueueStatus, 5000);
     return () => clearInterval(interval);
-  }, [isReviewStep]);
+  }, [job.id]);
 
   const postByDest = useMemo(() => {
     const map: Record<string, PlatformPost> = {};
@@ -272,31 +263,6 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange,
     setPublishingAll(false);
   }
 
-  function startEditMetadata(clip: Clip) {
-    setEditingClip(clip.id);
-    setEditTitle(clip.title);
-    setEditDescription(clip.description);
-    setEditTags(clip.tags.join(", "));
-  }
-
-  async function saveMetadata(clipId: string) {
-    try {
-      const tags = editTags
-        .split(",")
-        .map((t) => t.trim())
-        .filter(Boolean);
-      const updated = await updateClipMetadata(job.id, clipId, {
-        title: editTitle,
-        description: editDescription,
-        tags,
-      });
-      onUpdateClip(updated);
-      setEditingClip(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo guardar la metadata");
-    }
-  }
-
   function getAccountStatusLabel(accountName: string): { label: string; color: "success" | "warning" | "error" | "default" } {
     if (!queueStatus) return { label: "Desconocido", color: "default" };
     const quotaKey = Object.keys(queueStatus.account_quotas).find(k => k.endsWith(`:${accountName}`) || k.includes(accountName));
@@ -324,13 +290,15 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange,
           sx={{ justifyContent: "space-between", alignItems: { xs: "stretch", md: "flex-end" } }}
         >
           <Box>
-            <Typography variant="overline">{isReviewStep ? "Paso 3: Revisar y configurar" : "Lo que vas a publicar"}</Typography>
+            <Typography variant="overline" sx={{ display: "block" }}>
+              Paso 4: Lo que vas a publicar
+            </Typography>
             <Typography variant="h4" sx={{ mt: 0.5 }}>
               {selected.length} {selected.length === 1 ? "clip listo" : "clips listos"}
             </Typography>
           </Box>
           <Button variant="outlined" onClick={onBack} sx={{ alignSelf: { md: "flex-end" } }}>
-            {isReviewStep ? "Volver a CLIPS" : "Volver al carrete"}
+            Volver a REVISAR
           </Button>
         </Stack>
 
@@ -361,52 +329,50 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange,
               <b>para publicar</b>.
             </Typography>
             <Button variant="contained" onClick={onBack}>
-              Elegir clips
+              Volver a REVISAR
             </Button>
           </Paper>
         ) : (
           <>
-            {!isReviewStep && (
-              <Paper sx={{ mt: 4, p: 3, bgcolor: "action.hover" }}>
-                <Stack
-                  direction={{ xs: "column", md: "row" }}
-                  spacing={2}
-                  sx={{ justifyContent: "space-between", alignItems: { xs: "stretch", md: "center" } }}
-                >
-                  <Box>
-                    <Typography variant="overline" sx={{ display: "block" }}>
-                      Publicación en bloque
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary" sx={{ maxWidth: "58ch" }}>
-                      Configura en cada tarjeta a qué plataforma y canal publicar cada clip. Un clip
-                      puede ir a varios destinos. Aquí puedes lanzar todos los destinos de una vez.
-                    </Typography>
-                  </Box>
-                  <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ alignItems: "center" }}>
-                    <Typography
-                      variant="body2"
-                      sx={{ fontFamily: MONO, fontSize: "0.72rem" }}
-                    >
-                      {destCount} {destCount === 1 ? "destino" : "destinos"}
-                    </Typography>
-                    <Button
-                      variant="contained"
-                      onClick={() => void publishAllDestinations()}
-                      disabled={publishingAll || destCount === 0}
-                      startIcon={
-                        publishingAll ? <CircularProgress size={16} color="inherit" /> : undefined
-                      }
-                    >
-                      {publishingAll
-                        ? "Publicando…"
-                        : `Publicar ${destCount} ${destCount === 1 ? "destino" : "destinos"}`}
-                    </Button>
-                  </Stack>
+            <Paper sx={{ mt: 4, p: 3, bgcolor: "action.hover" }}>
+              <Stack
+                direction={{ xs: "column", md: "row" }}
+                spacing={2}
+                sx={{ justifyContent: "space-between", alignItems: { xs: "stretch", md: "center" } }}
+              >
+                <Box>
+                  <Typography variant="overline" sx={{ display: "block" }}>
+                    Publicación en bloque
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary" sx={{ maxWidth: "58ch" }}>
+                    Configura en cada tarjeta a qué plataforma y canal publicar cada clip. Un clip
+                    puede ir a varios destinos. Aquí puedes lanzar todos los destinos de una vez.
+                  </Typography>
+                </Box>
+                <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ alignItems: "center" }}>
+                  <Typography
+                    variant="body2"
+                    sx={{ fontFamily: MONO, fontSize: "0.72rem" }}
+                  >
+                    {destCount} {destCount === 1 ? "destino" : "destinos"}
+                  </Typography>
+                  <Button
+                    variant="contained"
+                    onClick={() => void publishAllDestinations()}
+                    disabled={publishingAll || destCount === 0}
+                    startIcon={
+                      publishingAll ? <CircularProgress size={16} color="inherit" /> : undefined
+                    }
+                  >
+                    {publishingAll
+                      ? "Publicando…"
+                      : `Publicar ${destCount} ${destCount === 1 ? "destino" : "destinos"}`}
+                  </Button>
                 </Stack>
-              </Paper>
-            )}
+              </Stack>
+            </Paper>
 
-            <Paper sx={{ mt: isReviewStep ? 2 : 4, p: 3 }}>
+            <Paper sx={{ mt: 4, p: 3 }}>
               <Stack
                 direction={{ xs: "column", sm: "row" }}
                 spacing={1.5}
@@ -490,7 +456,7 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange,
               )}
             </Paper>
 
-            {isReviewStep && queueStatus && (
+            {queueStatus && (
               <Paper sx={{ mt: 2, p: 2, bgcolor: "action.hover" }}>
                 <Typography variant="overline" sx={{ display: "block" }}>Estado de cola de publicación</Typography>
                 <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 1 }}>
@@ -521,7 +487,7 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange,
                                 variant={quota.status === "healthy" ? "filled" : "outlined"}
                                 sx={{
                                   bgcolor: quota.status === "healthy" ? "rgba(30,122,70,.08)" : quota.status === "rate_limited" ? "rgba(255,198,71,.15)" : "rgba(196,61,61,.08)",
-                                  color: quota.status === "healthy" ? "#1E7A46" : quota.status === "rate_limited" ? INK : "#C43D3D",
+                                  color: quota.status === "healthy" ? "#1E7A46" : quota.status === "rate_limited" ? ON_ACCENT : "#C43D3D",
                                 }}
                               />
                             </TableCell>
@@ -547,7 +513,6 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange,
                 const clipDests = clip.destinations ?? [];
                 const draft = defaultDraft(clip.id);
                 const draftAvailable = accountsForPlatform(accounts, draft.platform);
-                const isEditing = editingClip === clip.id;
                 return (
                   <Paper
                     key={clip.id}
@@ -584,19 +549,7 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange,
                         sx={{ justifyContent: "space-between", alignItems: "flex-start" }}
                       >
                         <Box sx={{ flex: 1 }}>
-                          {isEditing ? (
-                            <TextField
-                              size="small"
-                              fullWidth
-                              value={editTitle}
-                              onChange={(e) => setEditTitle(e.target.value)}
-                              label="Título"
-                              slotProps={{ htmlInput: { maxLength: 100 } }}
-                              sx={{ mb: 1 }}
-                            />
-                          ) : (
-                            <Typography variant="h5">{clip.title}</Typography>
-                          )}
+                          <Typography variant="h5">{clip.title}</Typography>
                           <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
                             "{clip.line}"
                           </Typography>
@@ -605,57 +558,19 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange,
                           <Button
                             size="small"
                             variant="outlined"
-                            onClick={() => isEditing ? setEditingClip(null) : startEditMetadata(clip)}
-                            disabled={publishingAll}
-                            startIcon={isEditing ? undefined : <EditRoundedIcon />}
-                            sx={{ whiteSpace: "nowrap" }}
-                          >
-                            {isEditing ? "Cancelar" : "Editar"}
-                          </Button>
-                          <Button
-                            size="small"
-                            variant={clip.publish ? "contained" : "outlined"}
-                            color={clip.publish ? "secondary" : "primary"}
                             onClick={() => void togglePublish(clip, !clip.publish)}
                             disabled={busy === clip.id || publishingAll}
-                            sx={{ whiteSpace: "nowrap", color: clip.publish ? INK : undefined }}
+                            startIcon={
+                              busy === clip.id ? (
+                                <CircularProgress size={14} color="inherit" />
+                              ) : undefined
+                            }
+                            sx={{ whiteSpace: "nowrap", color: "text.secondary" }}
                           >
-                            {clip.publish ? "✔ Para publicar" : "Para publicar"}
+                            Quitar de la lista
                           </Button>
                         </Stack>
                       </Stack>
-
-                      {isEditing && (
-                        <Box sx={{ mt: 2, p: 2, bgcolor: "action.hover", borderRadius: 1 }}>
-                          <TextField
-                            size="small"
-                            fullWidth
-                            multiline
-                            rows={3}
-                            value={editDescription}
-                            onChange={(e) => setEditDescription(e.target.value)}
-                            label="Descripción"
-                            slotProps={{ htmlInput: { maxLength: 2000 } }}
-                            sx={{ mb: 1 }}
-                          />
-                          <TextField
-                            size="small"
-                            fullWidth
-                            value={editTags}
-                            onChange={(e) => setEditTags(e.target.value)}
-                            label="Tags (separados por coma)"
-                            helperText={`${editTags.split(",").filter((t) => t.trim()).length} tags`}
-                            sx={{ mb: 1 }}
-                          />
-                          <Button
-                            size="small"
-                            variant="contained"
-                            onClick={() => void saveMetadata(clip.id)}
-                          >
-                            Guardar cambios
-                          </Button>
-                        </Box>
-                      )}
 
                       <Box
                         sx={{
@@ -714,7 +629,7 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange,
                                         variant={post.status === "publicado" ? "filled" : "outlined"}
                                         sx={{
                                           bgcolor: post.status === "publicado" ? MARK : "transparent",
-                                          color: post.status === "publicado" ? INK : undefined,
+                                          color: post.status === "publicado" ? ON_ACCENT : undefined,
                                           borderColor: post.status === "publicado" ? MARK : undefined,
                                         }}
                                         label={POST_STATUS_LABELS[post.status] ?? post.status}
@@ -726,7 +641,7 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange,
                                       variant="outlined"
                                       sx={{
                                         bgcolor: accountStatus.color === "success" ? "rgba(30,122,70,.08)" : accountStatus.color === "warning" ? "rgba(255,198,71,.15)" : "rgba(196,61,61,.08)",
-                                        color: accountStatus.color === "success" ? "#1E7A46" : accountStatus.color === "warning" ? INK : "#C43D3D",
+                                        color: accountStatus.color === "success" ? "#1E7A46" : accountStatus.color === "warning" ? ON_ACCENT : "#C43D3D",
                                         fontSize: "0.58rem",
                                       }}
                                     />

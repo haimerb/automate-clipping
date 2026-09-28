@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { useColorScheme } from "@mui/material/styles";
 import {
   Box,
   Button,
@@ -11,10 +13,13 @@ import {
 } from "@mui/material";
 import MenuRoundedIcon from "@mui/icons-material/MenuRounded";
 import LogoutRoundedIcon from "@mui/icons-material/LogoutRounded";
+import DarkModeRoundedIcon from "@mui/icons-material/DarkModeRounded";
+import LightModeRoundedIcon from "@mui/icons-material/LightModeRounded";
 import Upload from "./components/Upload";
 import Reel from "./components/Reel";
 import Dashboard from "./components/Dashboard";
 import Publish from "./components/Publish";
+import Review from "./components/Review";
 import Accounts from "./components/Accounts";
 import Auth from "./components/Auth";
 import ConfirmDialog from "./components/ConfirmDialog";
@@ -24,9 +29,9 @@ import type { Clip, Job, User } from "./api";
 import {
   CARD,
   EDGE,
-  INK,
   MARK,
   MONO,
+  ON_ACCENT,
   SIDEBAR_DISABLED,
   SIDEBAR_HOVER,
   SIDEBAR_TEXT,
@@ -37,6 +42,24 @@ import {
 type WizardStep = "ingest" | "clips" | "review" | "publish" | "accounts" | "analytics";
 
 const WIZARD_STEPS: WizardStep[] = ["ingest", "clips", "review", "publish", "accounts", "analytics"];
+
+export const STEP_ROUTES: Record<WizardStep, string> = {
+  ingest: "/ingresar",
+  clips: "/clips",
+  review: "/revisar",
+  publish: "/publicar",
+  accounts: "/cuentas",
+  analytics: "/ganancias",
+};
+
+const ROUTE_STEPS: Record<string, WizardStep> = {
+  "/ingresar": "ingest",
+  "/clips": "clips",
+  "/revisar": "review",
+  "/publicar": "publish",
+  "/cuentas": "accounts",
+  "/ganancias": "analytics",
+};
 
 const STEP_LABELS: Record<WizardStep, string> = {
   ingest: "Ingresar",
@@ -61,7 +84,7 @@ function Brand() {
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          boxShadow: `0 2px 8px rgba(30,58,138,0.3)`,
+          boxShadow: "0 2px 8px rgba(0,255,136,0.25)",
         }}
       >
         <Typography
@@ -69,7 +92,7 @@ function Brand() {
             fontFamily: MONO,
             fontSize: "0.9rem",
             fontWeight: 700,
-            color: "#fff",
+            color: ON_ACCENT,
             lineHeight: 1,
           }}
         >
@@ -87,7 +110,7 @@ function Brand() {
             lineHeight: 1.2,
           }}
         >
-          ClipForge
+          edgetape
         </Typography>
         <Typography
           sx={{
@@ -124,7 +147,7 @@ function SidebarContent({ activeStep, completedSteps, onStepClick, onLogout, use
   const navItems = [
     { step: "ingest" as WizardStep, label: "1. INGRESAR", caption: "Sube o pega un video", icon: "📥", disabled: false },
     { step: "clips" as WizardStep, label: "2. CLIPS", caption: "Detecta momentos clave", icon: "🎬", disabled: !canGoClips },
-    { step: "review" as WizardStep, label: "3. REVISAR", caption: "Edita metadata y thumbnails", icon: "✏️", disabled: !canGoReview },
+    { step: "review" as WizardStep, label: "3. REVISAR", caption: "Edita metadata y miniaturas", icon: "✏️", disabled: !canGoReview },
     { step: "publish" as WizardStep, label: "4. PUBLICAR", caption: "Configura destinos y publica", icon: "🚀", disabled: !canGoPublish },
     { step: "accounts" as WizardStep, label: "5. CUENTAS", caption: "Canales vinculados", icon: "🔗", disabled: false },
     { step: "analytics" as WizardStep, label: "6. GANANCIAS", caption: "Mide tu rendimiento", icon: "📊", disabled: false },
@@ -156,15 +179,15 @@ function SidebarContent({ activeStep, completedSteps, onStepClick, onLogout, use
                 justifyContent: "flex-start",
                 gap: 1.5,
                 background: isCurrent
-                  ? "linear-gradient(135deg, rgba(30,58,138,0.12) 0%, rgba(255,198,71,0.08) 100%)"
+                  ? "rgb(var(--mui-palette-secondary-mainChannel) / 0.12)"
                   : isCompleted
-                  ? "rgba(255,198,71,0.1)"
+                  ? "rgb(var(--mui-palette-secondary-mainChannel) / 0.08)"
                   : "transparent",
                 border: isCurrent ? `2px solid ${MARK}` : isCompleted ? `1px solid ${MARK}` : `1px solid ${SIDEBAR_HOVER}`,
                 color: item.disabled
                   ? SIDEBAR_DISABLED
                   : isCurrent
-                  ? INK
+                  ? "#fff"
                   : isCompleted
                   ? SIDEBAR_TEXT_ACTIVE
                   : SIDEBAR_TEXT,
@@ -172,8 +195,8 @@ function SidebarContent({ activeStep, completedSteps, onStepClick, onLogout, use
                   background: item.disabled
                     ? "transparent"
                     : isCurrent
-                    ? "linear-gradient(135deg, rgba(30,58,138,0.15) 0%, rgba(255,198,71,0.12) 100%)"
-                    : "rgba(255,198,71,0.08)",
+                    ? "rgb(var(--mui-palette-secondary-mainChannel) / 0.16)"
+                    : "rgba(255,255,255,0.08)",
                   borderColor: isCurrent ? MARK : SIDEBAR_HOVER,
                 },
                 transition: "all 0.2s ease",
@@ -190,14 +213,14 @@ function SidebarContent({ activeStep, completedSteps, onStepClick, onLogout, use
                   fontSize: "1.1rem",
                   flexShrink: 0,
                   background: isCurrent || isCompleted
-                    ? "linear-gradient(135deg, #1E3A8A 0%, #3B6AD1 100%)"
+                    ? "linear-gradient(135deg, #1E90FF 0%, #00FF88 100%)"
                     : item.disabled
                     ? "rgba(255,255,255,0.05)"
                     : "rgba(255,255,255,0.08)",
-                  color: isCurrent || isCompleted ? MARK : item.disabled ? SIDEBAR_DISABLED : "rgba(255,255,255,0.4)",
+                  color: isCurrent || isCompleted ? ON_ACCENT : item.disabled ? SIDEBAR_DISABLED : "rgba(255,255,255,0.4)",
                   border: isCurrent ? `2px solid ${MARK}` : "none",
                   boxShadow: isCurrent
-                    ? "0 0 0 4px rgba(255,198,71,0.3), 0 4px 12px rgba(30,58,138,0.3)"
+                    ? "0 0 0 4px rgb(var(--mui-palette-secondary-mainChannel) / 0.3), 0 4px 12px rgba(0,0,0,0.4)"
                     : "none",
                   transition: "all 0.3s ease",
                 }}
@@ -212,7 +235,7 @@ function SidebarContent({ activeStep, completedSteps, onStepClick, onLogout, use
                     fontWeight: 700,
                     letterSpacing: "0.08em",
                     textTransform: "uppercase",
-                    color: item.disabled ? SIDEBAR_DISABLED : isCurrent ? INK : isCompleted ? SIDEBAR_TEXT_ACTIVE : "rgba(255,255,255,0.6)",
+                    color: item.disabled ? SIDEBAR_DISABLED : isCurrent ? "#fff" : isCompleted ? SIDEBAR_TEXT_ACTIVE : "rgba(255,255,255,0.6)",
                     lineHeight: 1.2,
                     display: "block",
                     whiteSpace: "nowrap",
@@ -247,7 +270,7 @@ function SidebarContent({ activeStep, completedSteps, onStepClick, onLogout, use
                     justifyContent: "center",
                     background: isCompleted ? MARK : "transparent",
                     border: isCurrent ? `2px solid ${MARK}` : isCompleted ? "none" : `1px solid ${SIDEBAR_HOVER}`,
-                    color: isCompleted ? INK : MARK,
+                    color: isCompleted ? ON_ACCENT : MARK,
                     fontSize: "0.7rem",
                     fontWeight: 700,
                     fontFamily: MONO,
@@ -269,7 +292,7 @@ function SidebarContent({ activeStep, completedSteps, onStepClick, onLogout, use
               width: 34,
               height: 34,
               borderRadius: "50%",
-              background: "rgba(255,198,71,0.15)",
+              background: "rgb(var(--mui-palette-secondary-mainChannel) / 0.15)",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
@@ -321,19 +344,43 @@ function SidebarContent({ activeStep, completedSteps, onStepClick, onLogout, use
   );
 }
 
+function ColorModeToggle() {
+  const { mode, setMode } = useColorScheme();
+  const dark = mode === "dark";
+  return (
+    <IconButton
+      size="small"
+      aria-label={dark ? "cambiar a modo claro" : "cambiar a modo oscuro"}
+      onClick={() => setMode(dark ? "light" : "dark")}
+      sx={{
+        border: "1px solid",
+        borderColor: "divider",
+        color: "text.secondary",
+        "&:hover": { color: "text.primary", borderColor: EDGE },
+      }}
+    >
+      {dark ? <LightModeRoundedIcon fontSize="small" /> : <DarkModeRoundedIcon fontSize="small" />}
+    </IconButton>
+  );
+}
+
 export default function App() {
+  const navigate = useNavigate();
+  const location = useLocation();
   const [user, setUser] = useState<User | null>(null);
-  const [step, setStep] = useState<WizardStep>("ingest");
   const [completedSteps, setCompletedSteps] = useState<WizardStep[]>([]);
   const [job, setJob] = useState<Job | null>(null);
   const [clips, setClips] = useState<Clip[]>([]);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [notReadyAlert, setNotReadyAlert] = useState(false);
 
+  const step = ROUTE_STEPS[location.pathname] ?? "ingest";
+
   function saveWizardState() {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify({
-        step,
+        step: step,
+        route: location.pathname,
         completedSteps,
         jobId: job?.id,
       }));
@@ -345,13 +392,10 @@ export default function App() {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (parsed.step && WIZARD_STEPS.includes(parsed.step as WizardStep)) {
-          setStep(parsed.step as WizardStep);
-        }
         if (Array.isArray(parsed.completedSteps)) {
           setCompletedSteps(parsed.completedSteps.filter((s: string) => WIZARD_STEPS.includes(s as WizardStep)));
         }
-        return parsed.jobId;
+        return parsed.jobId ?? null;
       }
     } catch {}
     return null;
@@ -359,12 +403,10 @@ export default function App() {
 
   useEffect(() => {
     if (!getToken()) return;
-    // Cargar estado del wizard guardado
     const savedJobId = loadWizardState();
     getMe()
       .then(setUser)
       .catch(() => setToken(null));
-    // Si había un job guardado y estamos en un paso posterior a ingest, intentar cargarlo
     if (savedJobId) {
       getJob(savedJobId).then((j) => {
         if (j.status === "done") {
@@ -388,7 +430,7 @@ export default function App() {
     };
     window.addEventListener("edgetape:navigate", onNavigate as EventListener);
     return () => window.removeEventListener("edgetape:navigate", onNavigate as EventListener);
-  }, []);
+  }, [step]);
 
   function handleAuth(next: User) {
     setUser(next);
@@ -406,7 +448,6 @@ export default function App() {
   }
 
   async function handleReady(finished: Job) {
-    // Reintentar obtener clips si vienen vacíos (race condition job done vs clips guardados)
     let found: Clip[] = [];
     for (let i = 0; i < 5; i++) {
       found = await getClips(finished.id);
@@ -433,19 +474,17 @@ export default function App() {
     setCompletedSteps((prev) => {
       if (prev.includes(stepName)) return prev;
       const newSteps = [...prev, stepName];
+      saveWizardState();
       return newSteps;
     });
-    saveWizardState();
   }
 
   function goTo(newStep: WizardStep) {
     const currentIndex = WIZARD_STEPS.indexOf(step);
     const newIndex = WIZARD_STEPS.indexOf(newStep);
-    // Permitir pasos globales (Cuentas, Ganancias) siempre
     const isGlobalStep = newStep === "accounts" || newStep === "analytics";
     if (isGlobalStep || newIndex <= currentIndex || newIndex === currentIndex + 1 || completedSteps.includes(newStep)) {
-      setStep(newStep);
-      saveWizardState();
+      navigate(STEP_ROUTES[newStep]);
       setMobileOpen(false);
       window.scrollTo({ top: 0 });
     }
@@ -454,9 +493,7 @@ export default function App() {
   function canGoTo(newStep: WizardStep): boolean {
     const newIndex = WIZARD_STEPS.indexOf(newStep);
     const currentIndex = WIZARD_STEPS.indexOf(step);
-    // Cuentas y Analytics siempre accesibles (son globales, no dependen de job)
     const isGlobalStep = newStep === "accounts" || newStep === "analytics";
-    // Permitir: ir hacia atrás, ir al siguiente paso inmediato, ir a pasos globales, o ir a cualquier paso completado
     const isNextStep = newIndex === currentIndex + 1;
     return isGlobalStep || newIndex <= currentIndex || isNextStep || completedSteps.includes(newStep);
   }
@@ -472,6 +509,10 @@ export default function App() {
   function updateClip(updated: Clip) {
     setClips((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
   }
+
+  useEffect(() => {
+    saveWizardState();
+  }, [step, completedSteps]);
 
   if (!user) {
     return <Auth onAuth={handleAuth} />;
@@ -525,7 +566,7 @@ export default function App() {
             background: CARD,
             borderBottom: "1px solid",
             borderColor: "divider",
-            boxShadow: "0 1px 3px rgba(20,22,26,.04)",
+            boxShadow: "0 1px 3px rgba(0,0,0,.15)",
           }}
         >
           <Toolbar sx={{ gap: 2, px: { xs: 2, md: 3 }, minHeight: 60 }}>
@@ -545,16 +586,16 @@ export default function App() {
                 {STEP_LABELS[step]}
               </Typography>
             </Box>
-            {job && (
-              <Box
-                sx={{
-                  ml: "auto",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 1,
-                  minWidth: 0,
-                }}
-              >
+            <Box
+              sx={{
+                ml: "auto",
+                display: "flex",
+                alignItems: "center",
+                gap: 1,
+                minWidth: 0,
+              }}
+            >
+              {job && (
                 <Typography
                   variant="caption"
                   color="text.secondary"
@@ -568,32 +609,33 @@ export default function App() {
                     px: 1,
                     py: 0.5,
                     borderRadius: 1,
-                    backgroundColor: "rgba(30,58,138,0.06)",
+                    backgroundColor: "rgb(var(--mui-palette-primary-mainChannel) / 0.08)",
                   }}
                 >
                   {job.filename}
                 </Typography>
+              )}
+              <Box sx={{ display: { xs: "none", sm: "flex" }, alignItems: "center", gap: 1 }}>
+                <Typography
+                  variant="body2"
+                  sx={{ fontFamily: MONO, fontSize: "0.7rem", color: "text.secondary" }}
+                >
+                  {user.name}
+                </Typography>
+                <Button
+                  variant="outlined"
+                  size="small"
+                  onClick={logout}
+                  sx={{
+                    borderColor: "divider",
+                    color: "text.secondary",
+                    "&:hover": { borderColor: "error.main", color: "error.main" },
+                  }}
+                >
+                  salir
+                </Button>
               </Box>
-            )}
-            <Box sx={{ ml: job ? 1 : "auto", display: { xs: "none", sm: "flex" }, alignItems: "center", gap: 1.5 }}>
-              <Typography
-                variant="body2"
-                sx={{ fontFamily: MONO, fontSize: "0.7rem", color: "text.secondary" }}
-              >
-                {user.name}
-              </Typography>
-              <Button
-                variant="outlined"
-                size="small"
-                onClick={logout}
-                sx={{
-                  borderColor: "divider",
-                  color: "text.secondary",
-                  "&:hover": { borderColor: "error.main", color: "error.main", backgroundColor: "rgba(196,61,61,.04)" },
-                }}
-              >
-                salir
-              </Button>
+              <ColorModeToggle />
             </Box>
           </Toolbar>
         </Box>
@@ -617,12 +659,12 @@ export default function App() {
             />
           )}
           {step === "review" && job && (
-            <Publish
+            <Review
               job={job}
               clips={clips}
               onUpdateClip={updateClip}
               onBack={() => goTo("clips")}
-              onJobChange={setJob}
+              onNext={() => { markCompleted("review"); goTo("publish"); }}
             />
           )}
           {step === "publish" && job && (
@@ -652,7 +694,7 @@ export default function App() {
         >
           <Stack direction="row" spacing={2} sx={{ alignItems: "center", flexWrap: "wrap" }}>
             <Typography sx={{ fontFamily: MONO, fontSize: "0.68rem" }}>
-              ClipForge<span style={{ color: MARK }}>.</span>
+              edgetape<span style={{ color: MARK }}>.</span>
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ ml: "auto", fontSize: "0.72rem" }}>
               Grabaciones largas → los momentos que importan.
