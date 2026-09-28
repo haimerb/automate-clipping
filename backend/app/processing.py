@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 from .llm_scorer import build_clip_selector, select_clips_safely
 from .media import cut_clip, extract_best_thumbnail, extract_multiple_thumbnails, probe_duration
 from .models import Clip
-from .scorer import TOP_N
+from .scorer import TOP_N, _limits_for
 from .storage import JobStore
 from .viral import build_metadata_generator, generate_clip_metadata
 from .youtube import download_youtube
@@ -57,12 +57,20 @@ async def _ensure_source(job, store: JobStore):
         meta_path = job_dir / "generate_meta.json"
         if not meta_path.exists():
             raise RuntimeError("No se encontro metadata de generación")
-        meta = json.loads(meta_path.read_text())
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
         duration = float(meta.get("duration", 30))
         job.status = "processing"
         job.progress = 15
         store.save_job(job)
-        await asyncio.to_thread(_create_mock_video, duration, source)
+        from . import ai_generate
+        tmp = job_dir / "ai_tmp"
+        try:
+            await asyncio.to_thread(
+                ai_generate.generate_ai_video, meta, meta_path, source, tmp
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ai_generate falló (%s); usando mock de ffmpeg", exc)
+            await asyncio.to_thread(_create_mock_video, duration, source)
         return source
 
     if job.source not in ("youtube", "url") or not job.source_url:
@@ -139,12 +147,15 @@ async def run_job(job_id: str, store: JobStore, transcriber, selector=None) -> N
         if job.source == "generate":
             job_dir = store.job_dir(job.id)
             meta_path = job_dir / "generate_meta.json"
-            if not meta_path.exists():
-                raise RuntimeError("No se encontro metadata de generación")
-            meta = json.loads(meta_path.read_text())
+            meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
             prompt = meta.get("prompt", "Video generado con IA")
             platform = meta.get("platform", platform)
-            clip_dur = min(duration, 60.0 if "short" in platform or "tiktok" in platform or "reels" in platform else 120.0)
+            script_info = meta.get("script_gen") or {}
+            script_text = str(script_info.get("script") or prompt)[:3000]
+            hook = str(script_info.get("hook") or prompt)[:120]
+            title_hint = str(script_info.get("title") or prompt)[:60]
+            _, max_dur = _limits_for(platform)
+            clip_dur = min(duration, max_dur) if max_dur > 0 else duration
             clips = [
                 Clip(
                     id=_clip_id(1),
@@ -152,14 +163,14 @@ async def run_job(job_id: str, store: JobStore, transcriber, selector=None) -> N
                     start=0.0,
                     end=clip_dur,
                     duration=clip_dur,
-                    title=prompt[:60],
-                    line=prompt[:120],
-                    script=prompt,
+                    title=title_hint,
+                    line=hook,
+                    script=script_text,
                     score=1.0,
                 )
             ]
             meta_result = generate_clip_metadata(metadata_gen, [
-                {"script": prompt, "title": prompt[:60], "duration": clip_dur}
+                {"script": script_text, "title": title_hint, "duration": clip_dur}
             ], platform, job.source_url)
             if meta_result:
                 clips[0].title = meta_result[0].get("title", clips[0].title)
@@ -172,18 +183,20 @@ async def run_job(job_id: str, store: JobStore, transcriber, selector=None) -> N
             store.save_job(job)
             exports = store.exports_dir(job.id)
             exports.mkdir(parents=True, exist_ok=True)
+            # la fuente generada ya nace con la orientación correcta (vertical/horizontal)
+            gen_mode = os.environ.get("EDGETAPE_GENERATE_EXPORT_MODE", "original")
             for clip in clips:
                 try:
                     safe = re.sub(r"[^\w.\-]", "_", clip.title).strip("_")[:40] or "clip"
                     out = exports / f"{clip.id}_{safe}.mp4"
-                    mode = os.environ.get("EDGETAPE_EXPORT_MODE", "vertical_blur")
                     await asyncio.to_thread(
-                        cut_clip, source, clip.start, clip.end, out, mode,
+                        cut_clip, source, clip.start, clip.end, out, gen_mode,
                         caption=clip.line or clip.script,
                     )
-                    store.update_clip(job.id, clip.id, exported=True, export_name=out.name)
+                    clip.exported = True
+                    clip.export_name = out.name
                 except Exception:
-                    pass
+                    logger.warning("export del clip %s falló", clip.id)
             _extract_thumbnails(source, clips, exports)
             store.save_clips(job_id, clips)
 
@@ -192,6 +205,18 @@ async def run_job(job_id: str, store: JobStore, transcriber, selector=None) -> N
             job.clip_count = len(clips)
             job.status = "done"
             job.progress = 100
+            auto_name = meta.get("auto_publish_account")
+            if meta.get("auto_publish") and auto_name:
+                job.auto_publish = True
+                job.auto_publish_platform = platform or "youtube_shorts"
+                job.auto_publish_account = auto_name
+                store.save_job(job)
+                from .tasks import enqueue_auto_publish
+                for clip in clips:
+                    enqueue_auto_publish(
+                        job.id, clip.id, str(store.root),
+                        job.auto_publish_platform, auto_name,
+                    )
         else:
             trans_path = store.job_dir(job.id) / "transcription.json"
             colab_transcription = trans_path.exists()

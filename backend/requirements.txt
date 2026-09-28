@@ -12,3 +12,7 @@ celery>=5.3
 redis>=5.0
 python-dotenv>=1.0
 pillow>=10.0
+
+# generación de videos con IA (guion + voz; import perezoso)
+edge-tts>=6.1
+gTTS>=2.5
