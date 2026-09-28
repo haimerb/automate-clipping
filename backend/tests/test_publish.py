@@ -826,3 +826,38 @@ def test_publish_instagram_requires_public_url(tmp_path, auth_headers, sample_vi
     assert post.method == "manual"
     assert post.error is not None
     assert "URL pública" in post.error
+
+
+# ── re-evaluar tope diario al subir MAX_UPLOADS_PER_DAY ─────────────────────
+
+
+def test_raise_max_uploads_unblocks_daily_cap(tmp_path) -> None:
+    from app.publish_queue import AccountQuota, AccountStatus, PublishQueueManager
+
+    qm = PublishQueueManager(JobStore(tmp_path / "storage"))
+    qm.MAX_UPLOADS_PER_DAY = 5
+    q = AccountQuota(account_name="Canal", platform="youtube_shorts", uploads_today=5)
+    qm._quotas["youtube_shorts:Canal"] = q
+
+    can, reason = qm.can_upload("youtube_shorts", "Canal")
+    assert not can
+    assert reason == "daily_limit_reached"
+    assert qm._quotas["youtube_shorts:Canal"].status == AccountStatus.QUOTA_EXCEEDED
+
+    qm.MAX_UPLOADS_PER_DAY = 9
+    can, reason = qm.can_upload("youtube_shorts", "Canal")
+    assert can
+    assert reason == "daily_limit_raised"
+    assert qm._quotas["youtube_shorts:Canal"].status == AccountStatus.HEALTHY
+
+
+def test_platform_upload_limit_not_released_by_max(tmp_path) -> None:
+    from app.publish_queue import PublishQueueManager
+
+    qm = PublishQueueManager(JobStore(tmp_path / "storage"))
+    qm.MAX_UPLOADS_PER_DAY = 99
+    qm.record_upload("youtube_shorts", "Canal", False, 400, reason="uploadLimitExceeded")
+
+    can, reason = qm.can_upload("youtube_shorts", "Canal")
+    assert not can
+    assert reason.startswith("quota_exceeded_until_")

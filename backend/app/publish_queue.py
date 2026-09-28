@@ -156,6 +156,15 @@ class PublishQueueManager:
                 quota.quota_reset_at = self._next_midnight_utc()
                 self._save_state()
                 return True, "quota_reset"
+            # Pausa por NUESTRO tope diario (last_error queda vacío), no por el
+            # uploadLimitExceeded del canal de YouTube (que setea last_error).
+            # Si el límite configurado se subió, re-evaluar en vez de esperar a
+            # medianoche: los clips quedados en cola pueden publicarse hoy.
+            if not quota.last_error and quota.uploads_today < self.MAX_UPLOADS_PER_DAY:
+                quota.status = AccountStatus.HEALTHY
+                quota.quota_reset_at = self._next_midnight_utc()
+                self._save_state()
+                return True, "daily_limit_raised"
             return False, f"quota_exceeded_until_{int(quota.quota_reset_at)}"
 
         if quota.status == AccountStatus.RATE_LIMITED:
