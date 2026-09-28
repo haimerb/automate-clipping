@@ -150,6 +150,23 @@ export interface AccountInput {
   redirect_uri?: string | null;
 }
 
+export interface BrandingInfo {
+  channel_name: string;
+  tagline: string;
+  background_url: string | null;
+  created_at: string | null;
+  banner_exists: boolean;
+  avatar_exists: boolean;
+  banner_url: string | null;
+  avatar_url: string | null;
+}
+
+export interface BrandingInput {
+  channel_name: string;
+  tagline: string;
+  background_url?: string | null;
+}
+
 const TOKEN_KEY = "edgetape_token";
 
 export function getToken(): string | null {
@@ -236,6 +253,28 @@ export function updateAccount(id: string, input: AccountInput): Promise<LinkedAc
 
 export function deleteAccount(id: string): Promise<void> {
   return request<void>(`/api/accounts/${id}`, { method: "DELETE" });
+}
+
+// ── marca del canal (banner + avatar) ───────────────
+
+export function generateBranding(input: BrandingInput): Promise<BrandingInfo> {
+  return request<BrandingInfo>("/api/channel/branding", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export function getBranding(): Promise<BrandingInfo> {
+  return request<BrandingInfo>("/api/channel/branding");
+}
+
+export function brandingBannerUrl(): string {
+  return withToken("/api/channel/branding/banner");
+}
+
+export function brandingAvatarUrl(): string {
+  return withToken("/api/channel/branding/avatar");
 }
 
 // ── jobs / clips ───────────────────────────────────

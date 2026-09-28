@@ -11,3 +11,4 @@ PyJWT>=2.8
 celery>=5.3
 redis>=5.0
 python-dotenv>=1.0
+pillow>=10.0
