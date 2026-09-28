@@ -10,7 +10,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from .llm_scorer import build_clip_selector, select_clips_safely
-from .media import cut_clip, extract_best_thumbnail, extract_thumbnail_with_overlay, probe_duration
+from .media import cut_clip, extract_best_thumbnail, extract_multiple_thumbnails, probe_duration
 from .models import Clip
 from .scorer import TOP_N
 from .storage import JobStore
@@ -77,20 +77,28 @@ async def _ensure_source(job, store: JobStore):
 
 
 def _extract_thumbnails(source: Path, clips: list[Clip], exports_dir: Path) -> None:
-    """Extract the best thumbnail frame from each clip based on visual variance."""
+    """Extract the best thumbnail frame from each clip based on visual variance.
+
+    Se escriben en el subdirectorio `thumbs/` del job (el endpoint `/thumb`
+    sirve desde ahí); `exports_dir` solo marca la base del job para derivarlo.
+    """
+    thumbs_dir = exports_dir.parent / "thumbs"
+    thumbs_dir.mkdir(parents=True, exist_ok=True)
     for clip in clips:
         try:
             thumb_name = f"{clip.id}_thumb.jpg"
-            thumb_path = exports_dir / thumb_name
+            thumb_path = thumbs_dir / thumb_name
             extract_best_thumbnail(source, clip.start, clip.end, thumb_path)
             clip.thumbnail = thumb_name
 
-            viral_name = f"{clip.id}_thumb_viral.jpg"
-            viral_path = exports_dir / viral_name
-            extract_thumbnail_with_overlay(source, clip.start, viral_path, clip.title)
-            if viral_path.exists():
-                clip.thumbnails = [thumb_name, viral_name] + clip.thumbnails
-                clip.thumbnail = viral_name
+            hook = " ".join((clip.line or clip.title).split())
+            options = extract_multiple_thumbnails(
+                source, clip.start, clip.end, thumbs_dir, clip.id,
+                count=5, text=hook,
+            )
+            if options:
+                clip.thumbnails = options
+                clip.thumbnail = options[0]
                 clip.thumbnail_index = 0
         except Exception:
             clip.thumbnail = None
@@ -170,7 +178,8 @@ async def run_job(job_id: str, store: JobStore, transcriber, selector=None) -> N
                     out = exports / f"{clip.id}_{safe}.mp4"
                     mode = os.environ.get("EDGETAPE_EXPORT_MODE", "vertical_blur")
                     await asyncio.to_thread(
-                        cut_clip, source, clip.start, clip.end, out, mode
+                        cut_clip, source, clip.start, clip.end, out, mode,
+                        caption=clip.line or clip.script,
                     )
                     store.update_clip(job.id, clip.id, exported=True, export_name=out.name)
                 except Exception:
@@ -278,7 +287,8 @@ async def export_clip(
     if max_duration is not None and max_duration > 0:
         end = min(end, clip.start + max_duration)
     await asyncio.to_thread(
-        cut_clip, store.source_path(job_id), clip.start, end, out, mode
+        cut_clip, store.source_path(job_id), clip.start, end, out, mode,
+        caption=clip.line or clip.script,
     )
     return store.update_clip(
         job_id, clip_id, exported=True, export_name=out.name

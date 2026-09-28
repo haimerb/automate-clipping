@@ -679,8 +679,9 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
             src = store.source_path(job.id)
             if src.exists():
                 from .media import extract_multiple_thumbnails
+                hook = " ".join((clip.line or clip.title).split())
                 filenames = extract_multiple_thumbnails(
-                    src, clip.start, clip.end, thumbs_dir, clip.id
+                    src, clip.start, clip.end, thumbs_dir, clip.id, text=hook
                 )
                 if filenames:
                     clip.thumbnails = filenames
