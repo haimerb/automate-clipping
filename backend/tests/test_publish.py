@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -838,6 +839,7 @@ def test_raise_max_uploads_unblocks_daily_cap(tmp_path) -> None:
     qm.MAX_UPLOADS_PER_DAY = 5
     q = AccountQuota(account_name="Canal", platform="youtube_shorts", uploads_today=5)
     qm._quotas["youtube_shorts:Canal"] = q
+    qm._save_state()
 
     can, reason = qm.can_upload("youtube_shorts", "Canal")
     assert not can
@@ -883,3 +885,43 @@ def test_retry_at_awaits_min_delay_and_backoff(tmp_path) -> None:
     assert qm._retry_at_for(qq, "quota_exceeded_until_9999", 100) == 9999
 
     assert qm._retry_at_for(None, "ok", 100) == 400
+
+
+def test_publish_queue_recovers_corrupt_file_from_tmp(tmp_path) -> None:
+    from app.publish_queue import PublishQueueManager, UploadTask
+
+    store = JobStore(tmp_path / "storage")
+    qm = PublishQueueManager(store)
+    qm.enqueue(
+        UploadTask(job_id="j1", clip_id="c1", platform="youtube_shorts", account_name="Canal")
+    )
+
+    good = qm.queue_file.read_text(encoding="utf-8")
+    qm.queue_file.with_suffix(".json.tmp").write_text(good, encoding="utf-8")
+    qm.queue_file.write_text('[{"job_id": "j1", "clip_id"', encoding="utf-8")
+
+    qm2 = PublishQueueManager(store)
+    assert len(qm2._queue) == 1
+    assert qm2._queue[0].clip_id == "c1"
+
+
+def test_publish_queue_two_instances_do_not_lose_tasks(tmp_path) -> None:
+    from app.publish_queue import PublishQueueManager, UploadTask
+
+    store = JobStore(tmp_path / "storage")
+    a = PublishQueueManager(store)
+    b = PublishQueueManager(store)
+    for i in range(5):
+        a.enqueue(
+            UploadTask(
+                job_id=f"j{i}", clip_id=f"c{i}", platform="youtube_shorts", account_name="Canal"
+            )
+        )
+        b.record_upload("youtube_shorts", "Canal", True)
+
+    c = PublishQueueManager(store)
+    assert len(c._queue) == 5
+    assert [t.clip_id for t in c._queue] == ["c0", "c1", "c2", "c3", "c4"]
+    quota = c._quotas["youtube_shorts:Canal"]
+    assert quota.uploads_today == 5
+    assert json.loads(c.queue_file.read_text(encoding="utf-8")) is not None
