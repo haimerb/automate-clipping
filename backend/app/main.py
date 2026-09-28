@@ -14,11 +14,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .auth import create_token, get_current_user, get_current_user_media, hash_password, verify_password
+from . import ai_generate as aigen
 from .db import get_db, init_db
 from . import publish as pubmod
 from . import youtube_publish as ytpub
 from .llm_scorer import build_clip_selector
 from .media import extract_thumbnail
+from .scorer import _limits_for
 from .models import (
     Clip,
     ClipUpdate,
@@ -415,12 +417,40 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
 
     @app.post("/api/generate", status_code=202)
     async def generate_video(
-        body: GenerateRequest, user: User = Depends(get_current_user)
+        body: GenerateRequest,
+        user: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
     ) -> dict:
         if not body.prompt.strip():
             raise HTTPException(status_code=422, detail="El prompt no puede estar vacío")
-        if body.duration not in [15, 30, 60]:
-            raise HTTPException(status_code=422, detail="Duración debe ser 15, 30 o 60 segundos")
+        if body.duration not in aigen.GENERATE_DURATIONS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Duración inválida: usa {', '.join(str(d) for d in aigen.GENERATE_DURATIONS)} segundos",
+            )
+        min_d, max_d = _limits_for(body.platform)
+        if body.duration > max_d:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Duración {body.duration}s supera el máximo de {body.platform} ({max_d:.0f}s)"
+                ),
+            )
+        auto_account: str | None = None
+        if body.auto_publish:
+            account = None
+            if body.account_id:
+                account = db.scalar(
+                    select(LinkedAccount).where(
+                        LinkedAccount.id == body.account_id,
+                        LinkedAccount.user_id == user.id,
+                    )
+                )
+            if account is None:
+                raise HTTPException(
+                    status_code=422, detail="auto_publish requiere una cuenta destino válida"
+                )
+            auto_account = account.name
         job = store.create_job(
             f"IA: {body.prompt[:50]}",
             source="generate",
@@ -437,9 +467,10 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
             "voice": body.voice,
             "auto_publish": body.auto_publish,
             "account_id": body.account_id,
+            "auto_publish_account": auto_account,
         }
         import json
-        (job_dir / "generate_meta.json").write_text(json.dumps(meta, ensure_ascii=False))
+        (job_dir / "generate_meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
         if os.environ.get("EDGETAPE_ASYNC_BACKEND") == "celery":
             enqueue_job(job.id, str(store.root))
         else:

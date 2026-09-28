@@ -5,8 +5,15 @@ import {
   Box,
   Button,
   Chip,
+  Checkbox,
   Container,
+  FormControl,
+  FormControlLabel,
+  FormHelperText,
+  InputLabel,
   LinearProgress,
+  MenuItem,
+  Select,
   Stack,
   Tab,
   Table,
@@ -20,8 +27,18 @@ import {
 } from "@mui/material";
 import UploadFileRoundedIcon from "@mui/icons-material/UploadFileRounded";
 import LinkRoundedIcon from "@mui/icons-material/LinkRounded";
-import { uploadFileWithProgress, createUrlJob, pollJob, listJobs, formatDuration } from "../api";
-import type { Job } from "../api";
+import AutoAwesomeRoundedIcon from "@mui/icons-material/AutoAwesomeRounded";
+import {
+  uploadFileWithProgress,
+  createUrlJob,
+  pollJob,
+  listJobs,
+  formatDuration,
+  getAccounts,
+  generateVideo,
+  getJob,
+} from "../api";
+import type { Job, LinkedAccount } from "../api";
 import { EDGE, MARK, MONO, ON_ACCENT } from "../theme";
 import PipelineProgress from "./PipelineProgress";
 
@@ -30,7 +47,42 @@ interface Props {
   onOpenJob: (jobId: string) => void;
 }
 
-type Source = "file" | "url";
+type Source = "file" | "url" | "ai";
+
+const PLATFORM_MAX: Record<string, number> = {
+  youtube_shorts: 60,
+  tiktok: 60,
+  facebook_reels: 90,
+  instagram_reels: 90,
+  youtube: 180,
+  otros: 120,
+};
+
+const PLATFORM_LABEL: Record<string, string> = {
+  youtube_shorts: "YouTube Shorts",
+  tiktok: "TikTok",
+  facebook_reels: "Facebook Reels",
+  instagram_reels: "Instagram Reels",
+  youtube: "YouTube (video)",
+  otros: "Otro formato",
+};
+
+const GENERATE_DURATIONS = [15, 30, 60, 90, 120, 180];
+
+const STYLES: Record<string, string> = {
+  professional: "Profesional",
+  casual: "Casual",
+  dramatic: "Dramático",
+  motivational: "Motivacional",
+  educational: "Educativo",
+};
+
+const VOICES: Record<string, string> = {
+  es_mx_female: "Mujer (es-MX)",
+  es_mx_male: "Hombre (es-MX)",
+  es_es_female: "Mujer (es-ES)",
+  es_es_male: "Hombre (es-ES)",
+};
 
 const STATUS_LABEL: Record<string, string> = {
   queued: "En cola",
@@ -51,10 +103,22 @@ export default function Upload({ onReady, onOpenJob }: Props) {
   const [recent, setRecent] = useState<Job[]>([]);
   const [uploadPct, setUploadPct] = useState<number | null>(null);
 
+  const [prompt, setPrompt] = useState("");
+  const [genPlatform, setGenPlatform] = useState("youtube_shorts");
+  const [genDuration, setGenDuration] = useState(30);
+  const [style, setStyle] = useState("professional");
+  const [voice, setVoice] = useState("es_mx_female");
+  const [autoPublish, setAutoPublish] = useState(false);
+  const [accountId, setAccountId] = useState("");
+  const [accounts, setAccounts] = useState<LinkedAccount[]>([]);
+
   useEffect(() => {
     listJobs()
       .then(setRecent)
       .catch(() => setRecent([]));
+    getAccounts()
+      .then(setAccounts)
+      .catch(() => setAccounts([]));
   }, []);
 
   async function process(promise: Promise<Job>, doneLabel: string) {
@@ -96,13 +160,53 @@ export default function Upload({ onReady, onOpenJob }: Props) {
     void process(createUrlJob(trimmed), trimmed);
   }
 
+  function onGenPlatformChange(value: string) {
+    setGenPlatform(value);
+    const max = PLATFORM_MAX[value] ?? 120;
+    if (genDuration > max) {
+      const allowed = GENERATE_DURATIONS.filter((d) => d <= max);
+      setGenDuration(allowed.length ? allowed[allowed.length - 1] : genDuration);
+    }
+  }
+
+  async function onGenSubmit(e: FormEvent) {
+    e.preventDefault();
+    const trimmed = prompt.trim();
+    if (!trimmed) return;
+    setBusy(true);
+    setError(null);
+    setLabel("Video IA");
+    try {
+      const { job_id } = await generateVideo({
+        prompt: trimmed,
+        duration: genDuration,
+        style,
+        platform: genPlatform,
+        voice,
+        auto_publish: autoPublish,
+        account_id: autoPublish && accountId ? accountId : undefined,
+      });
+      const created = await getJob(job_id);
+      setJob(created);
+      const finished = await pollJob(job_id, setJob);
+      onReady(finished);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Algo salió mal");
+      setBusy(false);
+    }
+  }
+
   const showProgress = busy && job && job.status !== "done";
   const statusLabel = label
     ? job?.status === "downloading"
       ? "Descargando el video…"
       : job?.status === "processing"
-        ? "Buscando los momentos fuertes…"
-        : "Subiendo archivo…"
+        ? label === "Video IA"
+          ? "Generando el video con IA…"
+          : "Buscando los momentos fuertes…"
+        : label === "Video IA"
+          ? "Generando el video con IA…"
+          : "Subiendo archivo…"
     : "Procesando…";
 
   return (
@@ -115,8 +219,8 @@ export default function Upload({ onReady, onOpenJob }: Props) {
           Procesar una grabación
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mt: 1, maxWidth: "62ch" }}>
-          Sube un archivo o pega una URL (YouTube, Twitch, Zoom…). Edgetape descarga,
-          escanea, detecta los pasajes más fuertes y deja los clips listos para revisar.
+          Sube un archivo, pega una URL (YouTube, Twitch, Zoom…) o genera un video directamente
+          con IA. Edgetape escanea, detecta los pasajes más fuertes y deja los clips listos para revisar.
         </Typography>
       </Box>
 
@@ -140,9 +244,164 @@ export default function Upload({ onReady, onOpenJob }: Props) {
             iconPosition="start"
             disabled={busy}
           />
+          <Tab
+            value="ai"
+            label="IA"
+            icon={<AutoAwesomeRoundedIcon fontSize="small" />}
+            iconPosition="start"
+            disabled={busy}
+          />
         </Tabs>
 
-        {source === "file" ? (
+        {source === "ai" ? (
+          <Box component="form" onSubmit={onGenSubmit} sx={{ maxWidth: 760 }}>
+            <Typography variant="overline" color="text.secondary" sx={{ display: "block" }}>
+              Genera con IA
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 2 }}>
+              Edgetape escribe el guion, narra con voz sintética y monta el video para el formato
+              que elijas. Todo por plataforma: vertical para Shorts/TikTok/Reels, horizontal para YouTube.
+            </Typography>
+
+            <TextField
+              fullWidth
+              multiline
+              minRows={3}
+              maxRows={5}
+              label="¿Sobre qué quieres el video?"
+              placeholder="El secreto para vender más es entender la emoción de tus clientes…"
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              disabled={busy}
+              sx={{ mb: 2 }}
+            />
+
+            <Stack spacing={2} sx={{ mb: 2 }}>
+              <FormControl size="small" fullWidth>
+                <InputLabel>Plataforma</InputLabel>
+                <Select
+                  value={genPlatform}
+                  label="Plataforma"
+                  onChange={(e) => onGenPlatformChange(e.target.value)}
+                  disabled={busy}
+                >
+                  {Object.entries(PLATFORM_LABEL).map(([key, label]) => (
+                    <MenuItem key={key} value={key}>
+                      {label} · máx {PLATFORM_MAX[key]}s
+                    </MenuItem>
+                  ))}
+                </Select>
+                <FormHelperText>
+                  El formato de salida depende del destino: {PLATFORM_LABEL.youtube} sale horizontal,
+                  el resto vertical.
+                </FormHelperText>
+              </FormControl>
+
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+                <FormControl size="small" fullWidth>
+                  <InputLabel>Duración</InputLabel>
+                  <Select
+                    value={genDuration}
+                    label="Duración"
+                    onChange={(e) => setGenDuration(Number(e.target.value))}
+                    disabled={busy}
+                  >
+                    {GENERATE_DURATIONS.filter((d) => d <= (PLATFORM_MAX[genPlatform] ?? 120)).map(
+                      (d) => (
+                        <MenuItem key={d} value={d}>
+                          {d} segundos
+                        </MenuItem>
+                      ),
+                    )}
+                  </Select>
+                </FormControl>
+                <FormControl size="small" fullWidth>
+                  <InputLabel>Estilo</InputLabel>
+                  <Select
+                    value={style}
+                    label="Estilo"
+                    onChange={(e) => setStyle(e.target.value)}
+                    disabled={busy}
+                  >
+                    {Object.entries(STYLES).map(([key, label]) => (
+                      <MenuItem key={key} value={key}>
+                        {label}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+                <FormControl size="small" fullWidth>
+                  <InputLabel>Voz</InputLabel>
+                  <Select
+                    value={voice}
+                    label="Voz"
+                    onChange={(e) => setVoice(e.target.value)}
+                    disabled={busy}
+                  >
+                    {Object.entries(VOICES).map(([key, label]) => (
+                      <MenuItem key={key} value={key}>
+                        {label}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+              </Stack>
+
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={autoPublish}
+                    onChange={(e) => setAutoPublish(e.target.checked)}
+                    disabled={busy}
+                  />
+                }
+                label="Publicarlo automáticamente al terminar"
+              />
+              {autoPublish && (
+                <FormControl size="small" fullWidth>
+                  <InputLabel>Cuenta destino</InputLabel>
+                  <Select
+                    value={accountId}
+                    label="Cuenta destino"
+                    onChange={(e) => setAccountId(e.target.value)}
+                    disabled={busy}
+                  >
+                    {accounts.map((a) => (
+                      <MenuItem key={a.id} value={a.id}>
+                        {a.name} ({a.platform})
+                      </MenuItem>
+                    ))}
+                  </Select>
+                  {accounts.length === 0 && (
+                    <FormHelperText>
+                      No tenés cuentas vinculadas. Publicá desde el panel CUENTAS.
+                    </FormHelperText>
+                  )}
+                </FormControl>
+              )}
+            </Stack>
+
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ alignItems: "center" }}>
+              <Button
+                variant="contained"
+                type="submit"
+                disabled={busy || !prompt.trim() || (autoPublish && !accountId)}
+                sx={{ minWidth: 180 }}
+              >
+                {busy ? (job && job.status !== "done" ? statusLabel : "Procesando…") : "Generar video"}
+              </Button>
+              <Typography variant="caption" color="text.secondary">
+                Aparecerá en tu lista con un clip listo para revisar y publicar.
+              </Typography>
+            </Stack>
+
+            {showProgress && job && (
+              <Box sx={{ mt: 3 }}>
+                <PipelineProgress job={job} />
+              </Box>
+            )}
+          </Box>
+        ) : source === "file" ? (
           <Box
             onDragOver={(e) => {
               e.preventDefault();
@@ -294,7 +553,7 @@ export default function Upload({ onReady, onOpenJob }: Props) {
                       sx={{ cursor: ready ? "pointer" : "default" }}
                     >
                       <TableCell sx={{ fontWeight: 600 }}>{j.filename}</TableCell>
-                      <TableCell>{j.source === "youtube" || j.source === "url" ? "Enlace" : "archivo"}</TableCell>
+                      <TableCell>{j.source === "youtube" || j.source === "url" ? "Enlace" : j.source === "generate" ? "IA" : "archivo"}</TableCell>
                       <TableCell align="right" sx={{ fontFamily: MONO, fontSize: "0.78rem" }}>
                         {j.clip_count}
                       </TableCell>
