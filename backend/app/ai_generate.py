@@ -189,6 +189,62 @@ def _script_sentences(script: str) -> list[str]:
     return sentences[:SCENES_MAX_SENTENCES]
 
 
+def _topic_phrase(prompt: str) -> str:
+    cleaned = " ".join(prompt.split())
+    for pat in (r"titulado\s*[:“\"']?\s*([^“\"'\n.]+)\s*[”\"']?",
+                r"título\s*[:“\"']?\s*([^“\"'\n.]+)\s*[”\"']?",
+                r"titulada\s*[:“\"']?\s*([^“\"'\n.]+)\s*[”\"']?",
+                r"sobre\s+([^,.\n;]+)"):
+        m = re.search(pat, cleaned, re.IGNORECASE)
+        if m and m.group(1).strip():
+            return m.group(1).strip()
+    return cleaned[:90] or "un tema"
+
+
+def _fallback_script(prompt: str, duration: float) -> dict:
+    """Guion determinístico de respaldo. Cuando el LLM no está disponible hay que
+    cubrir la duración completa (p. ej. 6-15 min de YouTube), así que expande el
+    prompt a ≈ WORD_RATE palabras por segundo y extrae un título decente."""
+    topic = _topic_phrase(prompt)
+    target_words = max(24, int(duration * WORD_RATE))
+    sentences: list[str] = []
+    sentences.append(
+        f"¿Sabés qué hace tan especial a {topic}? Hoy te lo cuento de punta a punta."[:160]
+    )
+    parts = [
+        "Para entender bien la historia hay que mirar el origen: {t} es mucho más que lo que parece a simple vista.",
+        "Lo primero que marca la diferencia son los detalles que casi nadie nota, y en {t} hay muchísimos.",
+        "Con el correr de los años, {t} fue ganando protagonismo hasta convertirse en un tema del que todos hablan.",
+        "Hay momentos que quedaron grabados en la memoria colectiva, y {t} tiene varios de esos momentos.",
+        "Hablemos de datos concretos: lo que pasó en {t} cambió la forma de ver las cosas.",
+        "A veces conviene frenar un segundo y preguntarse por qué {t} resonó tanto entre la gente.",
+        "Los protagonistas de {t} no lo hicieron solos: detrás hubo decisiones, esfuerzo y mucha constancia.",
+        "Es difícil resumir todo lo que representa {t}, pero vale la pena intentarlo.",
+        "Cada tanto aparece una historia que redefine lo que creíamos saber sobre {t}.",
+        "Y ese es justamente el punto: {t} demuestra que lo importante no es la fama, sino el impacto real.",
+    ]
+    idx = 0
+    while _word_count(sentences) < target_words and len(sentences) < SCENES_MAX_SENTENCES - 1:
+        sentences.append(parts[idx % len(parts)].format(t=topic))
+        idx += 1
+    sentences.append(
+        f"Así que ya sabés: si querés entender {topic}, mirá los detalles y dejate llevar por la historia."
+    )
+    script = " ".join(sentences)
+    title = _topic_phrase(prompt)
+    return {
+        "title": title[:100],
+        "hook": sentences[0][:70],
+        "script": script,
+        "sentences": _script_sentences(script),
+        "tags": ["video", "generado", "contenido", "ia"],
+    }
+
+
+def _word_count(text: str) -> int:
+    return len(str(text).split())
+
+
 def write_script(prompt: str, duration: float, style: str, platform: str) -> dict:
     """Guion LLM para el prompt; fallback determinístico si no hay clave o falla."""
     platform_names = {
@@ -220,18 +276,33 @@ def write_script(prompt: str, duration: float, style: str, platform: str) -> dic
     except Exception as exc:  # noqa: BLE001
         logger.warning("guion LLM FAILED (%s); usando fallback determinístico", exc)
 
-    sentences = _script_sentences(prompt)
-    cleaned = " ".join(prompt.split())
+    pb = _fallback_script(prompt, duration)
     return {
-        "title": cleaned[:80] or "Momento clave",
-        "hook": cleaned[:70] or prompt[:70],
-        "script": cleaned,
-        "sentences": sentences if sentences else [cleaned],
+        "title": pb["title"] or "Momento clave",
+        "hook": pb["hook"],
+        "script": pb["script"],
+        "sentences": pb["sentences"],
         "tags": ["video", "generado", "contenido", "ia"],
     }
 
 
 # ── TTS (voz) ───────────────────────────────────────────────
+
+
+def _pad_audio(audio: str, total: float, out: Path) -> str | None:
+    """Estira el audio con silencio hasta `total` segundos (apad)."""
+    try:
+        cmd = [
+            FFMPEG, "-y", "-hide_banner", "-loglevel", "error",
+            "-i", audio, "-af", "aresample=48000,apad",
+            "-t", f"{total:.3f}", "-c:a", "aac", "-b:a", "128k", "-f", "mp4", str(out),
+        ]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if r.returncode == 0 and out.exists() and out.stat().st_size > 0:
+            return str(out)
+    except Exception:  # noqa: BLE001
+        pass
+    return None
 
 
 async def _edge_tts_save(text: str, voice: str, out: Path) -> None:
@@ -591,7 +662,10 @@ def _fetch_scene_images(
 def _run_ffmpeg(cmd: list[str], timeout: int = 600) -> None:
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg ai render failed: {result.stderr.strip()}")
+        err = result.stderr.strip()[-2000:]
+        if result.returncode < 0:
+            err = f"{err} (terminado por señal {result.returncode} — probable falta de memoria)"
+        raise RuntimeError(f"ffmpeg ai render failed (rc={result.returncode}): {err}")
 
 
 def _render_segment(still: Path, dur: float, variant: int, size: tuple[int, int], out: Path) -> None:
@@ -619,58 +693,66 @@ def _render_segment(still: Path, dur: float, variant: int, size: tuple[int, int]
     ])
 
 
-def _concat_segments(segs: list[Path], out: Path) -> Path:
-    if len(segs) == 1:
-        return segs[0]
-    inputs: list[str] = [FFMPEG, "-y", "-hide_banner", "-loglevel", "error"]
-    for s in segs:
-        inputs += ["-i", str(s)]
-    n = len(segs)
-    chain = "".join(f"[{i}:v]" for i in range(n)) + f"concat=n={n}:v=1:a=0[vo]"
-    _run_ffmpeg(inputs + [
-        "-filter_complex", chain, "-map", "[vo]",
-        "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart", "-f", "mp4", str(out),
-    ])
-    return out
-
-
-def _assemble(
-    base: Path, captions: list[Path | None], audio: str | None,
+def _compose_scenes(
+    segs: list[Path], captions: list[Path | None], audio: str | None,
     starts: list[float], ends: list[float], size: tuple[int, int],
     total: float, out: str | Path,
 ) -> Path:
-    """Pasada final: subtítulos lower-third por escena + voz sobre la base."""
-    inputs: list[str] = [FFMPEG, "-y", "-hide_banner", "-loglevel", "error", "-i", str(base)]
-    caps: list[tuple[Path, float, float]] = []
-    for cap, st, en in zip(captions, starts, ends):
-        if cap is None:
-            continue
-        seg = max(0.5, en - st)
-        inputs += ["-loop", "1", "-framerate", "30", "-t", f"{seg:.3f}", "-i", str(cap)]
-        caps.append((cap, st, en))
-    audio_idx = 1 + len(caps)
-    if audio:
-        inputs += ["-i", audio]
+    """Composición final POR ESCENA y concat con `-c copy`.
 
-    parts: list[str] = []
-    prev = "0:v"
-    for i, (_, st, en) in enumerate(caps):
-        idx = i + 1
-        parts.append(f"[{idx}:v]format=rgba[c{i}]")
-        parts.append(f"[{prev}][c{i}]overlay=0:0:enable='between(t,{st:.2f},{en:.2f})'[v{i}]")
-        prev = f"v{i}"
-    parts.append(f"[{prev}]format=yuv420p[vout]")
-    if audio:
-        parts.append(f"[{audio_idx}:a]aresample=48000[a]")
+    Ensamblar un video de 6-15 min en un solo ffmpeg (base + varios bucles de
+    caption + re-encode) desborda la memoria en máquinas limitadas (OOM → SIGKILL
+    con rc -9 y stderr vacío). Aquí cada escena es un mp4 corto propio (memoria
+    acotada) y el resultado se concatena por demuxer.
+    """
+    tmp = Path(out).parent
+    comps: list[Path] = []
+    for i, seg in enumerate(segs):
+        st = starts[i]
+        en = ends[i]
+        dur = max(0.5, en - st)
+        inputs = [FFMPEG, "-y", "-hide_banner", "-loglevel", "error", "-i", str(seg)]
+        cap_path = captions[i] if i < len(captions) else None
+        cap_idx = None
+        if cap_path is not None:
+            cap_idx = 1
+            inputs += ["-loop", "1", "-framerate", "30", "-t", f"{dur:.3f}", "-i", str(cap_path)]
+        audio_idx = None
+        if audio:
+            audio_idx = cap_idx + 1 if cap_idx else 1
+            inputs += ["-ss", f"{st:.3f}", "-t", f"{dur:.3f}", "-i", str(audio)]
 
-    cmd = list(inputs) + ["-filter_complex", ";".join(parts), "-map", "[vout]"]
-    if audio:
-        cmd += ["-map", "[a]", "-c:a", "aac", "-b:a", "128k"]
-    cmd += ["-c:v", "libx264", "-preset", "veryfast", "-movflags", "+faststart",
-            "-t", f"{total:.3f}", "-f", "mp4", str(out)]
-    _run_ffmpeg(cmd)
+        parts: list[str] = []
+        prevv = "0:v"
+        if cap_idx is not None:
+            parts.append(f"[{cap_idx}:v]format=rgba[c{i}]")
+            parts.append(f"[{prevv}][c{i}]overlay=0:0:enable='between(t,0,{dur:.3f})'[v{i}]")
+            prevv = f"v{i}"
+        parts.append(f"[{prevv}]format=yuv420p[vout]")
+        if audio_idx is not None:
+            parts.append(f"[{audio_idx}:a]aresample=48000[a{i}]")
 
+        comp = tmp / f"_comp{i}.mp4"
+        cmd = list(inputs) + ["-filter_complex", ";".join(parts), "-map", "[vout]"]
+        if audio_idx is not None:
+            cmd += ["-map", f"[a{i}]", "-c:a", "aac", "-b:a", "128k"]
+        cmd += ["-c:v", "libx264", "-preset", "veryfast", "-r", "30",
+                "-t", f"{dur:.3f}", "-f", "mp4", str(comp)]
+        _run_ffmpeg(cmd)
+        comps.append(comp)
+
+    if len(comps) == 1:
+        comps[0].replace(Path(out))
+        return Path(out)
+
+    lst = tmp / "_concat.txt"
+    lst.write_text("".join(f"file '{c.resolve()}'\n" for c in comps), encoding="utf-8")
+    _run_ffmpeg([
+        FFMPEG, "-y", "-hide_banner", "-loglevel", "error",
+        "-f", "concat", "-safe", "0", "-i", str(lst),
+        "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
+        "-movflags", "+faststart", "-f", "mp4", str(out),
+    ])
     if not Path(out).exists():
         raise RuntimeError("ffmpeg ai render no produjo archivo")
     return Path(out)
@@ -681,12 +763,8 @@ def render_video(
     starts: list[float], ends: list[float], size: tuple[int, int],
     total: float, out: str | Path, workdir: str | Path | None = None,
 ) -> Path:
-    """Ensambla el video final EN DOS PASADAS (un solo filtro con todas las entradas
-    en bucle infinito se estanca en frame 0 en ffmpeg):
-
-    1. Ken Burns + fade por escena → segmentos → concat → base.mp4.
-    2. subtítulos lower-third + voz sobre la base.
-    """
+    """Ensambla el video: Ken Burns + fade por escena → composición por escena
+    (subtítulo + voz) → concat. Cada paso está acotado en memoria."""
     tmp_dir = Path(workdir) if workdir else Path(out).parent
     tmp_dir.mkdir(parents=True, exist_ok=True)
     segs: list[Path] = []
@@ -695,8 +773,7 @@ def render_video(
         seg = tmp_dir / f"_seg{i}.mp4"
         _render_segment(still, dur, i, size, seg)
         segs.append(seg)
-    base = _concat_segments(segs, tmp_dir / "_base.mp4")
-    return _assemble(base, captions, audio, starts, ends, size, total, out)
+    return _compose_scenes(segs, captions, audio, starts, ends, size, total, out)
 
 
 def _render_legacy_single_bg(
@@ -717,7 +794,16 @@ def _render_legacy_single_bg(
         "-f", "mp4", str(base),
     ])
     caps = _render_captions(sentences, [None] * len(sentences), size, tmp)
-    return _assemble(base, caps, audio, starts, ends, size, total, out)
+    slices: list[Path] = []
+    for i, (st, en) in enumerate(zip(starts, ends)):
+        sl = tmp / f"_slice{i}.mp4"
+        _run_ffmpeg([
+            FFMPEG, "-y", "-hide_banner", "-loglevel", "error",
+            "-ss", f"{st:.3f}", "-t", f"{max(0.5, en - st):.3f}", "-i", str(base),
+            "-c:v", "copy", "-f", "mp4", str(sl),
+        ])
+        slices.append(sl)
+    return _compose_scenes(slices, caps, audio, starts, ends, size, total, out)
 
 
 # ── Subtítulos (lower-third) ────────────────────────────────
@@ -837,6 +923,9 @@ def generate_ai_video(meta: dict, meta_path: Path | None, source: str | Path, tm
     total = max(duration, audio_dur)
     if total <= 0.5:
         total = duration
+    if audio and audio_dur < total - 0.25:
+        audio = _pad_audio(audio, total, tmp / "voice_padded.m4a") or audio
+        audio_dur = total
 
     size = _size_for(platform)
     sentences = script_info["sentences"] or [script_text]
