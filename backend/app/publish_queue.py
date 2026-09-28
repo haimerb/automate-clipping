@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -8,7 +9,7 @@ import time
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from .storage import JobStore
 from .users import LinkedAccount
@@ -50,6 +51,7 @@ class AccountQuota:
     last_upload: float = 0
     status: AccountStatus = AccountStatus.HEALTHY
     quota_reset_at: float = 0
+    next_retry_at: float = 0
     consecutive_429: int = 0
     consecutive_403: int = 0
     last_error: str = ""
@@ -96,26 +98,84 @@ class PublishQueueManager:
         self._queue: list[UploadTask] = []
         self._quotas: dict[str, AccountQuota] = {}
         self._processing = False
+        self._lock_held = False
+        self._lock_fh: Any = None
         self._load_state()
 
     def _load_state(self) -> None:
-        if self.queue_file.exists():
-            try:
-                data = json.loads(self.queue_file.read_text())
-                self._queue = [UploadTask.from_dict(t) for t in data]
-            except Exception:
-                self._queue = []
-        if self.quota_file.exists():
-            try:
-                data = json.loads(self.quota_file.read_text())
-                self._quotas = {k: AccountQuota.from_dict(v) for k, v in data.items()}
-            except Exception:
-                self._quotas = {}
+        self._queue = [UploadTask.from_dict(t) for t in (self._read_json(self.queue_file) or [])]
+        self._quotas = {
+            k: AccountQuota.from_dict(v)
+            for k, v in (self._read_json(self.quota_file) or {}).items()
+        }
         self._reset_daily_quotas()
 
+    @staticmethod
+    def _read_json(path: Path) -> Any:
+        """Lee y parsea `path`; si está trozado (JSON inválido por una escritura
+        muerta a mitad), cae al `.tmp` atómico que esa escritura dejó antes de
+        reemplazar. Nunca revienta: la cola puede reconstruirse desde cero."""
+        for candidate in (path, path.with_suffix(".json.tmp")):
+            if not candidate.exists():
+                continue
+            try:
+                return json.loads(candidate.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+        return None
+
     def _save_state(self) -> None:
-        self.queue_file.write_text(json.dumps([t.to_dict() for t in self._queue]))
-        self.quota_file.write_text(json.dumps({k: v.to_dict() for k, v in self._quotas.items()}))
+        qtmp = self.queue_file.with_suffix(".json.tmp")
+        qtmp.write_text(json.dumps([t.to_dict() for t in self._queue]), encoding="utf-8")
+        qtmp.replace(self.queue_file)
+        ktmp = self.quota_file.with_suffix(".json.tmp")
+        ktmp.write_text(
+            json.dumps({k: v.to_dict() for k, v in self._quotas.items()}), encoding="utf-8"
+        )
+        ktmp.replace(self.quota_file)
+
+    @contextlib.contextmanager
+    def _lock_file(self):
+        """Exclusión entre procesos para el JSON persistente de la cola.
+
+        Con Celery en prefork hay varios procesos mutando publish_queue.json a
+        la vez; sin lock la escritura puede quedar trozada (JSON inválido) y
+        perderse tareas. Reentrante dentro del mismo proceso: si la instancia ya
+        tiene el lock (transacciones anidadas), se devuelve sin re-lockear, así
+        no hay deadlock de flock sobre un segundo fd. En Windows (dev, pool
+        solo/inproc) no existe fcntl: best effort."""
+        if self._lock_held:
+            yield
+            return
+        fh = self.queue_file.with_suffix(".json.lock").open("a+")
+        try:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            self._lock_held = True
+            self._lock_fh = fh
+        except (ImportError, OSError):
+            logger.debug("lock de archivo no disponible; best effort")
+        try:
+            yield
+        finally:
+            if self._lock_held:
+                try:
+                    fcntl.flock(self._lock_fh.fileno(), fcntl.LOCK_UN)  # noqa: F821
+                except (ImportError, OSError):
+                    pass
+                self._lock_held = False
+                self._lock_fh = None
+            fh.close()
+
+    def _transaction(self, fn: Any) -> Any:
+        """Recarga el estado persistido, aplica `fn` sobre la copia fresca y
+        persiste de nuevo, todo bajo el lock. Evita pisar actualizaciones que
+        otro proceso haya escrito entre tanto."""
+        with self._lock_file():
+            self._load_state()
+            result = fn()
+            self._save_state()
+            return result
 
     def _get_quota_key(self, platform: str, account: str) -> str:
         return f"{platform}:{account}"
@@ -140,6 +200,11 @@ class PublishQueueManager:
                 quota.quota_reset_at = self._next_midnight_utc()
 
     def can_upload(self, platform: str, account: str) -> tuple[bool, str]:
+        def _compute() -> tuple[bool, str]:
+            return self._can_upload_unlocked(platform, account)
+        return self._transaction(_compute)
+
+    def _can_upload_unlocked(self, platform: str, account: str) -> tuple[bool, str]:
         self._reset_daily_quotas()
         key = self._get_quota_key(platform, account)
         quota = self._quotas.get(key)
@@ -221,6 +286,14 @@ class PublishQueueManager:
         self, platform: str, account: str, success: bool, error_code: int = 0,
         reason: str = "",
     ) -> None:
+        def _apply() -> None:
+            self._record_upload_state(platform, account, success, error_code, reason)
+        self._transaction(_apply)
+
+    def _record_upload_state(
+        self, platform: str, account: str, success: bool, error_code: int = 0,
+        reason: str = "",
+    ) -> None:
         key = self._get_quota_key(platform, account)
         quota = self._quotas.get(key) or AccountQuota(account_name=account, platform=platform)
         now = time.time()
@@ -261,17 +334,18 @@ class PublishQueueManager:
             quota.last_error = f"quota (403: {quota.consecutive_403}/2)"
 
         self._quotas[key] = quota
-        self._save_state()
 
     def enqueue(self, task: UploadTask) -> None:
-        self._queue.append(task)
-        self._queue.sort(key=lambda t: (t.priority, t.created_at))
-        self._save_state()
+        def _apply() -> None:
+            self._queue.append(task)
+            self._queue.sort(key=lambda t: (t.priority, t.created_at))
+        self._transaction(_apply)
 
     def enqueue_many(self, tasks: list[UploadTask]) -> None:
-        self._queue.extend(tasks)
-        self._queue.sort(key=lambda t: (t.priority, t.created_at))
-        self._save_state()
+        def _apply() -> None:
+            self._queue.extend(tasks)
+            self._queue.sort(key=lambda t: (t.priority, t.created_at))
+        self._transaction(_apply)
 
     def _retry_at_for(self, quota: Optional["AccountQuota"], reason: str, now: float) -> float:
         """Cuándo debe reintentarse un task según el estado de la cuenta.
@@ -298,7 +372,10 @@ class PublishQueueManager:
         self._processing = True
 
         try:
-            while self._queue:
+            while True:
+                self._transaction(lambda: None)  # recargar cola y cuotas frescas
+                if not self._queue:
+                    break
                 task = self._queue[0]
                 now = time.time()
 
@@ -311,23 +388,31 @@ class PublishQueueManager:
                     accounts = get_accounts_fn()
                     best = self.get_best_account(task.platform, accounts)
                     if best and best.name != task.account_name:
-                        task.account_name = best.name
-                        self._save_state()
+                        def _swap(name: str = best.name) -> None:
+                            if self._queue:
+                                self._queue[0].account_name = name
+                        self._transaction(_swap)
                         continue
                     # En vez de un retry genérico de +300s, despertar justo cuando
                     # la cuenta vuelva a permitir subir (fin del min_delay, del
                     # backoff de 429 o del reset diario).
-                    quota = self._quotas.get(
-                        self._get_quota_key(task.platform, task.account_name)
-                    )
-                    retry = self._retry_at_for(quota, reason, now)
+                    def _schedule(reason_: str = reason, now_: float = now) -> None:
+                        if not self._queue:
+                            return
+                        t = self._queue[0]
+                        q = self._quotas.get(self._get_quota_key(t.platform, t.account_name))
+                        t.next_retry_at = self._retry_at_for(q, reason_, now_)
+                    self._transaction(_schedule)
+                    retry = task.next_retry_at
                     wait = max(1, min(retry - now, 60))
-                    task.next_retry_at = retry
-                    self._save_state()
                     await asyncio.sleep(wait)
                     continue
 
-                self._queue.pop(0)
+                task = self._transaction(
+                    lambda: self._queue.pop(0) if self._queue else None
+                )
+                if task is None:
+                    continue
                 try:
                     job = store.get_job(task.job_id)
                     clip = next((c for c in store.get_clips(task.job_id) if c.id == task.clip_id), None)
@@ -349,9 +434,10 @@ class PublishQueueManager:
                     task.retries += 1
                     if task.retries <= self.MAX_RETRIES_429:
                         task.next_retry_at = time.time() + (60 * task.retries)
-                        self._queue.insert(0, task)
+                        def _reinsert(t: UploadTask = task) -> None:
+                            self._queue.insert(0, t)
+                        self._transaction(_reinsert)
 
-                self._save_state()
                 delay = float(os.environ.get("EDGETAPE_QUEUE_TASK_DELAY", 10))
                 if delay > 0:
                     await asyncio.sleep(delay)
@@ -375,11 +461,18 @@ class PublishQueueManager:
         }
 
 
-_queue_manager_instance: Optional[PublishQueueManager] = None
+_queue_managers_by_root: dict[str, PublishQueueManager] = {}
 
 
 def get_queue_manager(store: JobStore) -> PublishQueueManager:
-    global _queue_manager_instance
-    if _queue_manager_instance is None:
-        _queue_manager_instance = PublishQueueManager(store)
-    return _queue_manager_instance
+    """Devuelve el manager cacheado por raíz de storage.
+
+    En producción hay una sola raíz (un solo manager compartido); en tests, cada
+    tmp_path obtiene su propio manager y no hay contaminación cruzada entre
+    tests que usen raíces distintas."""
+    root = str(store.root)
+    manager = _queue_managers_by_root.get(root)
+    if manager is None:
+        manager = PublishQueueManager(store)
+        _queue_managers_by_root[root] = manager
+    return manager
