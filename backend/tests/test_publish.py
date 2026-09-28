@@ -42,15 +42,17 @@ def sample_video(tmp_path_factory) -> Path:
     return path
 
 
-def _done_job(tmp_path: Path, auth_headers: dict, sample_video: Path) -> tuple[TestClient, JobStore, str]:
+@pytest.fixture(scope="module")
+def job_template(tmp_path_factory, auth_headers, sample_video) -> Path:
+    """Corre run_job UNA vez por módulo y deja el storage listo; cada test lo copia."""
+    import time
     from app import main as _main_mod
 
-    storage = tmp_path / "storage"
+    storage = tmp_path_factory.mktemp("job-template") / "storage"
     transcriber = MockTranscriber()
     app = create_app(storage, transcriber)
     client = TestClient(app)
     store = JobStore(storage)
-    import time
     _orig_enqueue = _main_mod.enqueue_job
     _orig_auto = _main_mod.enqueue_auto_publish
     _main_mod.enqueue_job = lambda *a, **kw: None
@@ -66,7 +68,7 @@ def _done_job(tmp_path: Path, auth_headers: dict, sample_video: Path) -> tuple[T
             asyncio.run(run_job(job_id, store, transcriber))
             job = store.get_job(job_id)
             if job and job.status == "done" and store.get_clips(job_id):
-                return client, store, job_id
+                return storage
             time.sleep(0.1)
     finally:
         _main_mod.enqueue_job = _orig_enqueue
@@ -74,8 +76,20 @@ def _done_job(tmp_path: Path, auth_headers: dict, sample_video: Path) -> tuple[T
     raise AssertionError("no se generaron clips en ningún intento")
 
 
-def test_publish_fallback_creates_ready_post(tmp_path, auth_headers, sample_video, monkeypatch) -> None:
-    client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
+def _done_job(tmp_path: Path, job_template: Path) -> tuple[TestClient, JobStore, str]:
+    storage = tmp_path / "storage"
+    shutil.copytree(job_template, storage, dirs_exist_ok=True)
+    transcriber = MockTranscriber()
+    app = create_app(storage, transcriber)
+    client = TestClient(app)
+    store = JobStore(storage)
+    jobs = store.list_jobs()
+    assert len(jobs) == 1, f"el template tiene {len(jobs)} jobs"
+    return client, store, jobs[0].id
+
+
+def test_publish_fallback_creates_ready_post(tmp_path, auth_headers, sample_video, job_template, monkeypatch) -> None:
+    client, store, job_id = _done_job(tmp_path, job_template)
     client.post(
         "/api/accounts",
         json={"platform": "youtube", "name": "Canal Respaldo", "handle": "@x", "token": None},
@@ -97,8 +111,8 @@ def test_publish_fallback_creates_ready_post(tmp_path, auth_headers, sample_vide
     assert store.get_clips(job_id)[0].exported is True
 
 
-def test_publish_real_upload(tmp_path, auth_headers, sample_video, monkeypatch) -> None:
-    client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
+def test_publish_real_upload(tmp_path, auth_headers, sample_video, job_template, monkeypatch) -> None:
+    client, store, job_id = _done_job(tmp_path, job_template)
     client.post(
         "/api/accounts",
         json={
@@ -127,8 +141,8 @@ def test_publish_real_upload(tmp_path, auth_headers, sample_video, monkeypatch) 
     assert post.account == "Canal Real"
 
 
-def test_publish_real_upload_env_fallback(tmp_path, auth_headers, sample_video, monkeypatch) -> None:
-    client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
+def test_publish_real_upload_env_fallback(tmp_path, auth_headers, sample_video, job_template, monkeypatch) -> None:
+    client, store, job_id = _done_job(tmp_path, job_template)
     client.post(
         "/api/accounts",
         json={"platform": "youtube", "name": "Canal Env", "handle": "@x", "token": "1//REFRESH123"},
@@ -150,8 +164,8 @@ def test_publish_real_upload_env_fallback(tmp_path, auth_headers, sample_video, 
     assert post.url == "https://www.youtube.com/watch?v=vidEnv"
 
 
-def test_publish_api_key_token_falls_back(tmp_path, auth_headers, sample_video, monkeypatch) -> None:
-    client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
+def test_publish_api_key_token_falls_back(tmp_path, auth_headers, sample_video, job_template, monkeypatch) -> None:
+    client, store, job_id = _done_job(tmp_path, job_template)
     client.post(
         "/api/accounts",
         json={
@@ -180,8 +194,8 @@ def test_publish_api_key_token_falls_back(tmp_path, auth_headers, sample_video, 
     assert upload_called["value"] is False
 
 
-def test_publish_skips_when_already_published(tmp_path, auth_headers, sample_video, monkeypatch) -> None:
-    client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
+def test_publish_skips_when_already_published(tmp_path, auth_headers, sample_video, job_template, monkeypatch) -> None:
+    client, store, job_id = _done_job(tmp_path, job_template)
     client.post(
         "/api/accounts",
         json={
@@ -226,7 +240,7 @@ def _yt_error(status_code: int, reason: str) -> Exception:
 
 
 def test_publish_upload_limit_exceeded_pauses_channel(
-    tmp_path, auth_headers, sample_video, monkeypatch
+    tmp_path, auth_headers, sample_video, job_template, monkeypatch
 ) -> None:
     from app.publish_queue import get_queue_manager, AccountStatus
 
@@ -234,7 +248,7 @@ def test_publish_upload_limit_exceeded_pauses_channel(
     qm._quotas.clear()
     qm._save_state()
 
-    client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
+    client, store, job_id = _done_job(tmp_path, job_template)
     client.post(
         "/api/accounts",
         json={
@@ -273,7 +287,7 @@ def test_publish_upload_limit_exceeded_pauses_channel(
 
 
 def test_publish_other_errors_do_not_pause_channel(
-    tmp_path, auth_headers, sample_video, monkeypatch
+    tmp_path, auth_headers, sample_video, job_template, monkeypatch
 ) -> None:
     from app.publish_queue import get_queue_manager, AccountStatus
 
@@ -281,7 +295,7 @@ def test_publish_other_errors_do_not_pause_channel(
     qm._quotas.clear()
     qm._save_state()
 
-    client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
+    client, store, job_id = _done_job(tmp_path, job_template)
     client.post(
         "/api/accounts",
         json={
@@ -314,7 +328,7 @@ def test_publish_other_errors_do_not_pause_channel(
     assert quota is None or quota.status != AccountStatus.QUOTA_EXCEEDED
 
 
-def test_publish_max_uploads_per_day_env(tmp_path, auth_headers, sample_video, monkeypatch) -> None:
+def test_publish_max_uploads_per_day_env(tmp_path, auth_headers, sample_video, job_template, monkeypatch) -> None:
     from app.publish_queue import PublishQueueManager
 
     monkeypatch.setenv("EDGETAPE_MAX_UPLOADS_PER_DAY", "2")
@@ -333,9 +347,9 @@ def test_publish_max_uploads_per_day_env(tmp_path, auth_headers, sample_video, m
     assert reason == "daily_limit_reached"
 
 
-def test_publish_all_only_marked_clips(tmp_path, auth_headers, sample_video, monkeypatch) -> None:
+def test_publish_all_only_marked_clips(tmp_path, auth_headers, sample_video, job_template, monkeypatch) -> None:
     monkeypatch.setattr(ytpub, "is_configured", lambda: False)
-    client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
+    client, store, job_id = _done_job(tmp_path, job_template)
     clips = client.get(f"/api/jobs/{job_id}/clips", headers=auth_headers).json()
     target = clips[0]
 
@@ -351,9 +365,9 @@ def test_publish_all_only_marked_clips(tmp_path, auth_headers, sample_video, mon
     assert posts[0].status == "listo"
 
 
-def test_publish_all_endpoint(tmp_path, auth_headers, sample_video, monkeypatch) -> None:
+def test_publish_all_endpoint(tmp_path, auth_headers, sample_video, job_template, monkeypatch) -> None:
     monkeypatch.setattr(ytpub, "is_configured", lambda: False)
-    client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
+    client, store, job_id = _done_job(tmp_path, job_template)
     clips = client.get(f"/api/jobs/{job_id}/clips", headers=auth_headers).json()
     client.patch(
         f"/api/jobs/{job_id}/clips/{clips[0]['id']}", json={"publish": True}, headers=auth_headers
@@ -373,9 +387,9 @@ def test_publish_all_endpoint(tmp_path, auth_headers, sample_video, monkeypatch)
     assert post["url"] == pubmod.STUDIO_UPLOAD_URL
 
 
-def test_publish_clip_endpoint(tmp_path, auth_headers, sample_video, monkeypatch) -> None:
+def test_publish_clip_endpoint(tmp_path, auth_headers, sample_video, job_template, monkeypatch) -> None:
     monkeypatch.setattr(ytpub, "is_configured", lambda: False)
-    client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
+    client, store, job_id = _done_job(tmp_path, job_template)
     clip_id = store.get_clips(job_id)[0].id
     client.post(
         "/api/accounts",
@@ -398,10 +412,10 @@ def test_publish_clip_endpoint(tmp_path, auth_headers, sample_video, monkeypatch
 
 
 def test_publish_clip_endpoint_returns_existing_when_duplicated(
-    tmp_path, auth_headers, sample_video, monkeypatch
+    tmp_path, auth_headers, sample_video, job_template, monkeypatch
 ) -> None:
     monkeypatch.setattr(ytpub, "is_configured", lambda: False)
-    client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
+    client, store, job_id = _done_job(tmp_path, job_template)
     clip_id = store.get_clips(job_id)[0].id
 
     first = client.post(
@@ -423,10 +437,10 @@ def test_publish_clip_endpoint_returns_existing_when_duplicated(
 
 
 def test_publish_clip_resolves_account_by_platform(
-    tmp_path, auth_headers, sample_video, monkeypatch
+    tmp_path, auth_headers, sample_video, job_template, monkeypatch
 ) -> None:
     monkeypatch.setattr(ytpub, "is_configured", lambda: False)
-    client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
+    client, store, job_id = _done_job(tmp_path, job_template)
     clip_id = store.get_clips(job_id)[0].id
     client.post(
         "/api/accounts",
@@ -452,7 +466,7 @@ def test_publish_clip_resolves_account_by_platform(
     assert linked is None  # la cuenta es de YouTube, no aplica al destino TikTok
 
 
-def test_publish_clip_endpoint_requires_done_job(tmp_path, auth_headers, sample_video) -> None:
+def test_publish_clip_endpoint_requires_done_job(tmp_path, auth_headers, job_template) -> None:
     storage = tmp_path / "storage"
     client = TestClient(create_app(storage, MockTranscriber()))
     store = JobStore(storage)
@@ -466,8 +480,8 @@ def test_publish_clip_endpoint_requires_done_job(tmp_path, auth_headers, sample_
     assert resp.status_code == 404  # job ajeno -> not found
 
 
-def test_publish_tiktok_uses_direct_link(tmp_path, auth_headers, sample_video, monkeypatch) -> None:
-    client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
+def test_publish_tiktok_uses_direct_link(tmp_path, auth_headers, sample_video, job_template, monkeypatch) -> None:
+    client, store, job_id = _done_job(tmp_path, job_template)
     client.post(
         "/api/accounts",
         json={"platform": "tiktok", "name": "Mi TikTok", "handle": "@t", "token": None},
@@ -485,9 +499,9 @@ def test_publish_tiktok_uses_direct_link(tmp_path, auth_headers, sample_video, m
 
 
 def test_publish_facebook_reels_uses_direct_link(
-    tmp_path, auth_headers, sample_video, monkeypatch
+    tmp_path, auth_headers, sample_video, job_template, monkeypatch
 ) -> None:
-    client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
+    client, store, job_id = _done_job(tmp_path, job_template)
     client.post(
         "/api/accounts",
         json={"platform": "facebook", "name": "Mi Página", "handle": "@fb", "token": None},
@@ -505,8 +519,8 @@ def test_publish_facebook_reels_uses_direct_link(
     assert post.account == "Mi Página"
 
 
-def test_publish_tiktok_never_uses_youtube_api(tmp_path, auth_headers, sample_video, monkeypatch) -> None:
-    client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
+def test_publish_tiktok_never_uses_youtube_api(tmp_path, auth_headers, sample_video, job_template, monkeypatch) -> None:
+    client, store, job_id = _done_job(tmp_path, job_template)
     client.post(
         "/api/accounts",
         json={"platform": "tiktok", "name": "TikTok API", "handle": "@t", "token": "1//REFRESH123"},
@@ -531,16 +545,16 @@ def test_publish_tiktok_never_uses_youtube_api(tmp_path, auth_headers, sample_vi
     assert upload_called["value"] is False
 
 
-def test_patch_job_settings_auto_publish(tmp_path, auth_headers, sample_video) -> None:
-    client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
+def test_patch_job_settings_auto_publish(tmp_path, auth_headers, sample_video, job_template) -> None:
+    client, store, job_id = _done_job(tmp_path, job_template)
     resp = client.patch(f"/api/jobs/{job_id}", json={"auto_publish": True}, headers=auth_headers)
     assert resp.status_code == 200
     assert resp.json()["auto_publish"] is True
     assert store.get_job(job_id).auto_publish is True
 
 
-def test_clip_thumbnail(tmp_path, auth_headers, auth_token, sample_video) -> None:
-    client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
+def test_clip_thumbnail(tmp_path, auth_headers, auth_token, sample_video, job_template) -> None:
+    client, store, job_id = _done_job(tmp_path, job_template)
     clip_id = store.get_clips(job_id)[0].id
     resp = client.get(f"/api/jobs/{job_id}/clips/{clip_id}/thumb", headers=auth_headers)
     assert resp.status_code == 200
@@ -555,8 +569,8 @@ def test_clip_thumbnail(tmp_path, auth_headers, auth_token, sample_video) -> Non
     assert resp.status_code == 401
 
 
-def test_youtube_auth_url_builds_link(tmp_path, auth_headers, sample_video, monkeypatch) -> None:
-    client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
+def test_youtube_auth_url_builds_link(tmp_path, auth_headers, sample_video, job_template, monkeypatch) -> None:
+    client, store, job_id = _done_job(tmp_path, job_template)
     resp = client.post(
         "/api/accounts",
         json={"platform": "youtube", "name": "Mi canal", "handle": "@x", "token": None},
@@ -572,8 +586,8 @@ def test_youtube_auth_url_builds_link(tmp_path, auth_headers, sample_video, monk
     assert acc_id in resp.json()["auth_url"]
 
 
-def test_youtube_auth_url_requires_credentials(tmp_path, auth_headers, sample_video, monkeypatch) -> None:
-    client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
+def test_youtube_auth_url_requires_credentials(tmp_path, auth_headers, sample_video, job_template, monkeypatch) -> None:
+    client, store, job_id = _done_job(tmp_path, job_template)
     resp = client.post(
         "/api/accounts",
         json={"platform": "youtube", "name": "Mi canal", "handle": "@x", "token": None},
@@ -587,8 +601,8 @@ def test_youtube_auth_url_requires_credentials(tmp_path, auth_headers, sample_vi
     assert resp.status_code == 400
 
 
-def test_youtube_callback_stores_refresh_token(tmp_path, auth_headers, sample_video, monkeypatch) -> None:
-    client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
+def test_youtube_callback_stores_refresh_token(tmp_path, auth_headers, sample_video, job_template, monkeypatch) -> None:
+    client, store, job_id = _done_job(tmp_path, job_template)
     resp = client.post(
         "/api/accounts",
         json={
@@ -616,9 +630,9 @@ def test_youtube_callback_stores_refresh_token(tmp_path, auth_headers, sample_vi
 
 
 def test_youtube_auth_url_uses_account_credentials(
-    tmp_path, auth_headers, sample_video, monkeypatch
+    tmp_path, auth_headers, sample_video, job_template, monkeypatch
 ) -> None:
-    client, store, job_id = _done_job(tmp_path, auth_headers, sample_video)
+    client, store, job_id = _done_job(tmp_path, job_template)
     monkeypatch.delenv("EDGETAPE_YT_CLIENT_ID", raising=False)
     monkeypatch.delenv("EDGETAPE_YT_CLIENT_SECRET", raising=False)
     resp = client.post(

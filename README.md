@@ -144,6 +144,9 @@ scoped por usuario; los usuarios y cuentas vinculadas viven en PostgreSQL.
 | `EDGETAPE_YT_CLIENT_ID` | Client ID de Google Cloud para OAuth de YouTube (upload) |
 | `EDGETAPE_YT_CLIENT_SECRET` | Client secret de Google Cloud para OAuth de YouTube |
 | `EDGETAPE_ASYNC_BACKEND` | Backend async: `local` (en proceso uvicorn), `celery` (requiere Redis + worker) |
+| `EDGETAPE_METADATA_DELAY` | Pausa deliberada entre scoring y metadata (segundos; default `5`; `0` acelera tests) |
+| `EDGETAPE_QUEUE_TASK_DELAY` | Pausa entre tareas de la cola de publicación (segundos; default `10`) |
+| `EDGETAPE_OLLAMA_PROBE` | Probe de Ollama al construir el generador de metadata (`0` lo desactiva; default `1`) |
 
 **Prioridad de transcripción**: Groq (si hay `EDGETAPE_GROQ_API_KEY`) → `faster-whisper` local → mock.
 

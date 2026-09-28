@@ -319,7 +319,9 @@ class PublishQueueManager:
                         self._queue.insert(0, task)
 
                 self._save_state()
-                await asyncio.sleep(10)
+                delay = float(os.environ.get("EDGETAPE_QUEUE_TASK_DELAY", 10))
+                if delay > 0:
+                    await asyncio.sleep(delay)
 
         finally:
             self._processing = False

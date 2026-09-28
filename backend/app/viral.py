@@ -246,16 +246,17 @@ def build_metadata_generator() -> MetadataGenerator:
     ):
         return LLMetadataGenerator()
 
-    # 3. Ollama local (sin API key)
-    try:
-        with httpx.Client(timeout=3.0) as c:
-            resp = c.get(f"{OLLAMA_URL}/api/tags")
-            if resp.status_code == 200:
-                models = [m["name"] for m in resp.json().get("models", [])]
-                if any(OLLAMA_MODEL in m for m in models):
-                    return OllamaMetadataGenerator()
-    except Exception:
-        pass
+    # 3. Ollama local (sin API key) — se puede desactivar el probe con EDGETAPE_OLLAMA_PROBE=0
+    if os.environ.get("EDGETAPE_OLLAMA_PROBE", "1") != "0":
+        try:
+            with httpx.Client(timeout=3.0) as c:
+                resp = c.get(f"{OLLAMA_URL}/api/tags")
+                if resp.status_code == 200:
+                    models = [m["name"] for m in resp.json().get("models", [])]
+                    if any(OLLAMA_MODEL in m for m in models):
+                        return OllamaMetadataGenerator()
+        except Exception:
+            pass
 
     # 4. Fallback heurístico
     return HeuristicMetadataGenerator()

@@ -23,6 +23,13 @@ class _FakeResponse:
         }
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _no_real_sleep():
+    """Los chunks de Groq duermen 1.5s y el retry 429 hasta 5s; en tests no esperamos."""
+    with mock.patch("time.sleep"):
+        yield
+
+
 @pytest.fixture(scope="module")
 def long_video(tmp_path_factory: pytest.TempPathFactory) -> Path:
     src = tmp_path_factory.mktemp("groq") / "video.mp4"
