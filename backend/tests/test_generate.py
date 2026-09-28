@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from app import ai_generate as aig
 from app.ai_generate import _size_for
 from app.main import create_app
 from app.media import probe_duration
@@ -301,3 +302,18 @@ def test_ai_generate_size_for() -> None:
     assert _size_for("youtube_shorts") == (1080, 1920)
     assert _size_for("tiktok") == (1080, 1920)
     assert _size_for("instagram_reels") == (1080, 1920)
+
+
+def test_ai_generate_durations_and_floor() -> None:
+    assert 360 in aig.GENERATE_DURATIONS
+    assert 900 in aig.GENERATE_DURATIONS
+    assert aig.GENERATE_DURATIONS == sorted(aig.GENERATE_DURATIONS)
+    assert aig.YOUTUBE_MIN_LONG == 360.0
+
+
+def test_ai_generate_scene_images_offline(tmp_path: Path) -> None:
+    """Con EDGETAPE_AI_IMAGES=0 no hay descargas: todas las escenas sin imagen."""
+    sizes = aig._fetch_scene_images(["A B C D E"], (1080, 1920), tmp_path)
+    assert sizes == [None]
+    # escenas título/cierre nunca buscan imagen
+    assert aig._fetch_scene_images(["a.", "b.", "c."], (1080, 1920), tmp_path) == [None, None, None]
