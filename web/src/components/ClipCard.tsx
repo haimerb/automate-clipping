@@ -3,7 +3,7 @@ import BarWave from "./BarWave";
 import ClipPreview from "./ClipPreview";
 import { formatDuration, formatTimecode } from "../api";
 import type { Clip } from "../api";
-import { EDGE, INK, MARK, MONO, MUTED } from "../theme";
+import { EDGE, MARK, MONO, MUTED, ON_ACCENT } from "../theme";
 
 interface Props {
   jobId: string;
@@ -50,7 +50,7 @@ export default function ClipCard({ jobId, clip, active, onSelect, onTogglePublis
           variant="overline"
           sx={{
             fontSize: "0.62rem",
-            color: active ? INK : "text.primary",
+            color: active ? ON_ACCENT : "text.primary",
             background: active ? MARK : "transparent",
             px: active ? 0.75 : 0,
             py: active ? 0.25 : 0,

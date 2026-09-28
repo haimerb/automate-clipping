@@ -6,6 +6,7 @@ import {
   Button,
   Chip,
   Container,
+  LinearProgress,
   Stack,
   Tab,
   Table,
@@ -19,9 +20,9 @@ import {
 } from "@mui/material";
 import UploadFileRoundedIcon from "@mui/icons-material/UploadFileRounded";
 import LinkRoundedIcon from "@mui/icons-material/LinkRounded";
-import { uploadFile, createUrlJob, pollJob, listJobs, formatDuration } from "../api";
+import { uploadFileWithProgress, createUrlJob, pollJob, listJobs, formatDuration } from "../api";
 import type { Job } from "../api";
-import { EDGE, INK, MARK, MONO } from "../theme";
+import { EDGE, MARK, MONO, ON_ACCENT } from "../theme";
 import PipelineProgress from "./PipelineProgress";
 
 interface Props {
@@ -48,6 +49,7 @@ export default function Upload({ onReady, onOpenJob }: Props) {
   const [label, setLabel] = useState<string | null>(null);
   const [url, setUrl] = useState("");
   const [recent, setRecent] = useState<Job[]>([]);
+  const [uploadPct, setUploadPct] = useState<number | null>(null);
 
   useEffect(() => {
     listJobs()
@@ -71,7 +73,13 @@ export default function Upload({ onReady, onOpenJob }: Props) {
   }
 
   function startFile(file: File) {
-    void process(uploadFile(file), file.name);
+    setUploadPct(0);
+    void process(
+      uploadFileWithProgress(file, (uploaded, total) => {
+        setUploadPct(total > 0 ? Math.round((uploaded / total) * 100) : 0);
+      }),
+      file.name,
+    ).finally(() => setUploadPct(null));
   }
 
   function onDrop(e: DragEvent<HTMLDivElement>) {
@@ -177,6 +185,18 @@ export default function Upload({ onReady, onOpenJob }: Props) {
             <Button variant="contained" sx={{ mt: 2.5 }} disabled={busy}>
               {busy && label ? statusLabel : "Elegir un archivo"}
             </Button>
+            {uploadPct !== null && (
+              <Box sx={{ mt: 2.5, textAlign: "left" }} aria-live="polite">
+                <LinearProgress
+                  variant="determinate"
+                  value={uploadPct}
+                  sx={{ height: 6, borderRadius: 99 }}
+                />
+                <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
+                  Subiendo… {uploadPct}%
+                </Typography>
+              </Box>
+            )}
             {showProgress && job && (
               <Box sx={{ mt: 3, textAlign: "left" }}>
                 <PipelineProgress job={job} />
@@ -189,7 +209,7 @@ export default function Upload({ onReady, onOpenJob }: Props) {
               Enlace
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 2 }}>
-              Pega una URL de YouTube, Twitch, Zoom… y ClipForge descarga el video automáticamente.
+              Pega una URL de YouTube, Twitch, Zoom… y Edgetape descarga el video automáticamente.
             </Typography>
             <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
               <TextField
@@ -251,7 +271,7 @@ export default function Upload({ onReady, onOpenJob }: Props) {
             </Typography>
           </Box>
         ) : (
-          <Box sx={{ border: "1px solid", borderColor: "divider", borderRadius: 2, overflow: "hidden", bgcolor: "background.paper" }}>
+          <Box sx={{ border: "1px solid", borderColor: "divider", borderRadius: 2, overflowX: "auto", bgcolor: "background.paper" }}>
             <Table size="small">
               <TableHead>
                 <TableRow>
@@ -300,7 +320,7 @@ export default function Upload({ onReady, onOpenJob }: Props) {
                           variant={ready ? "filled" : "outlined"}
                           sx={{
                             bgcolor: ready ? MARK : "transparent",
-                            color: ready ? INK : undefined,
+                            color: ready ? ON_ACCENT : undefined,
                             borderColor: ready ? MARK : undefined,
                           }}
                         />

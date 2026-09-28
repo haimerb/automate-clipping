@@ -285,6 +285,51 @@ export function uploadFile(file: File): Promise<Job> {
   return request<Job>("/api/jobs", { method: "POST", body: form });
 }
 
+export function uploadFileWithProgress(
+  file: File,
+  onProgress: (uploaded: number, total: number) => void,
+): Promise<Job> {
+  return new Promise<Job>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/jobs");
+    const token = getToken();
+    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress(e.loaded, e.total);
+    };
+
+    xhr.onload = () => {
+      try {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(JSON.parse(xhr.responseText) as Job);
+        } else {
+          let detail = xhr.statusText;
+          try {
+            const body = JSON.parse(xhr.responseText);
+            if (body.detail) detail = body.detail;
+          } catch {
+            // cuerpos de error no JSON
+          }
+          if (xhr.status === 401) {
+            setToken(null);
+            window.dispatchEvent(new CustomEvent("edgetape:unauthorized"));
+          }
+          reject(new Error(detail));
+        }
+      } catch (err) {
+        reject(err instanceof Error ? err : new Error("Respuesta inválida del servidor"));
+      }
+    };
+
+    xhr.onerror = () => reject(new Error("No se pudo conectar con el servidor"));
+
+    const form = new FormData();
+    form.append("file", file);
+    xhr.send(form);
+  });
+}
+
 export function createYoutubeJob(url: string): Promise<Job> {
   return request<Job>("/api/jobs/youtube", {
     method: "POST",
@@ -446,7 +491,7 @@ export function reprocessJob(jobId: string): Promise<Clip[]> {
   return request<Clip[]>(`/api/jobs/${jobId}/reprocess`, { method: "POST" });
 }
 
-function withToken(url: string): string {
+export function withToken(url: string): string {
   const token = getToken();
   return token ? `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}` : url;
 }

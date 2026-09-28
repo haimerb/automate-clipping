@@ -7,6 +7,7 @@ import {
   Container,
   Grid,
   Paper,
+  Skeleton,
   Stack,
   Table,
   TableBody,
@@ -24,7 +25,7 @@ import {
   getJob,
 } from "../api";
 import type { DashboardStats, Job, LinkedAccount } from "../api";
-import { EDGE, INK, MARK, MONO } from "../theme";
+import { EDGE, MARK, MONO, ON_ACCENT } from "../theme";
 import ConfirmDialog from "./ConfirmDialog";
 
 interface Props {
@@ -56,7 +57,7 @@ function StatCard({
     >
       <Typography
         variant="overline"
-        sx={{ display: "block", fontSize: "0.58rem", ...(highlight ? { color: INK } : {}) }}
+        sx={{ display: "block", fontSize: "0.58rem", ...(highlight ? { color: ON_ACCENT } : {}) }}
       >
         {label}
       </Typography>
@@ -64,7 +65,7 @@ function StatCard({
         variant="h4"
         sx={{
           lineHeight: 1.1,
-          ...(highlight ? { color: INK } : {}),
+          ...(highlight ? { color: ON_ACCENT } : {}),
         }}
       >
         {value}
@@ -118,6 +119,7 @@ export default function Dashboard({ onNewJob, onOpenJob }: Props) {
   const platforms = Object.entries(stats?.by_platform ?? {});
   const totalByPlatform = stats?.total_earnings ?? 0;
   const pending = stats ? stats.posts - stats.publicados : 0;
+  const loading = !stats;
 
   return (
     <Container component="section" maxWidth="lg" sx={{ py: { xs: 5, md: 7 } }}>
@@ -153,40 +155,40 @@ export default function Dashboard({ onNewJob, onOpenJob }: Props) {
         <Grid size={{ xs: 12, sm: 6, md: 4 }}>
           <StatCard
             label="Ganancia total"
-            value={formatMoney(totalByPlatform, "USD")}
+            value={loading ? <Skeleton width={96} sx={{ fontSize: "0.9em" }} /> : formatMoney(totalByPlatform, "USD")}
             caption="suma de todas las publicaciones"
             highlight
           />
         </Grid>
         <Grid size={{ xs: 6, sm: 4, md: 2 }}>
-          <StatCard label="Videos procesados" value={stats?.jobs ?? 0} />
+          <StatCard label="Videos procesados" value={loading ? <Skeleton width={48} /> : stats?.jobs ?? 0} />
         </Grid>
         <Grid size={{ xs: 6, sm: 4, md: 2 }}>
-          <StatCard label="Clips generados" value={stats?.clips ?? 0} />
+          <StatCard label="Clips generados" value={loading ? <Skeleton width={48} /> : stats?.clips ?? 0} />
         </Grid>
         <Grid size={{ xs: 6, sm: 4, md: 2 }}>
           <StatCard
             label="Publicaciones"
-            value={stats?.posts ?? 0}
+            value={loading ? <Skeleton width={48} /> : stats?.posts ?? 0}
             caption={`${stats?.publicados ?? 0} publicadas · ${pending} pendientes`}
           />
         </Grid>
         <Grid size={{ xs: 6, sm: 4, md: 2 }}>
           <StatCard
             label="Vistas totales"
-            value={(stats?.total_views ?? 0).toLocaleString("es")}
+            value={loading ? <Skeleton width={64} /> : (stats?.total_views ?? 0).toLocaleString("es")}
           />
         </Grid>
         <Grid size={{ xs: 6, sm: 4, md: 3 }}>
           <StatCard
             label="Me gusta"
-            value={(stats?.total_likes ?? 0).toLocaleString("es")}
+            value={loading ? <Skeleton width={64} /> : (stats?.total_likes ?? 0).toLocaleString("es")}
           />
         </Grid>
         <Grid size={{ xs: 6, sm: 4, md: 3 }}>
           <StatCard
             label="Cuentas vinculadas"
-            value={accounts.length}
+            value={loading ? <Skeleton width={40} /> : accounts.length}
             caption={
               accounts.length === 0
                 ? "vincula tus cuentas en CUENTAS"
@@ -201,7 +203,15 @@ export default function Dashboard({ onNewJob, onOpenJob }: Props) {
           <Typography variant="h6" sx={{ mb: 2 }}>
             Por plataforma
           </Typography>
-          {platforms.length === 0 ? (
+          {loading ? (
+            <Paper sx={{ p: 2 }}>
+              <Stack spacing={1}>
+                {[0, 1, 2].map((i) => (
+                  <Skeleton key={i} height={28} />
+                ))}
+              </Stack>
+            </Paper>
+          ) : platforms.length === 0 ? (
             <Box
               sx={{
                 p: 4,
@@ -254,7 +264,16 @@ export default function Dashboard({ onNewJob, onOpenJob }: Props) {
           <Typography variant="h6" sx={{ mb: 2 }}>
             Últimas publicaciones
           </Typography>
-          {!stats || stats.recent_posts.length === 0 ? (
+          {loading ? (
+            <Stack spacing={2}>
+              {[0, 1].map((i) => (
+                <Paper key={i} sx={{ p: 2 }}>
+                  <Skeleton width="55%" />
+                  <Skeleton width="35%" height={20} />
+                </Paper>
+              ))}
+            </Stack>
+          ) : !stats || stats.recent_posts.length === 0 ? (
             <Box
               sx={{
                 p: 4,
@@ -325,7 +344,7 @@ export default function Dashboard({ onNewJob, onOpenJob }: Props) {
       <Box sx={{ mt: 5, display: "flex", gap: 1.5, alignItems: "center" }}>
         <Box aria-hidden sx={{ flex: 1, height: 8, borderRadius: 2, background: `repeating-linear-gradient(90deg, transparent 0 6px, ${EDGE} 6px 8px, transparent 8px 14px)`, opacity: 0.5 }} />
         <Typography variant="caption" color="text.secondary" sx={{ fontFamily: MONO, fontSize: "0.6rem", letterSpacing: "0.1em" }}>
-          CLIPFORGE · RENDIMIENTO
+          EDGETAPE · RENDIMIENTO
         </Typography>
         <Box aria-hidden sx={{ flex: 1, height: 8, borderRadius: 2, background: `repeating-linear-gradient(90deg, transparent 0 6px, ${EDGE} 6px 8px, transparent 8px 14px)`, opacity: 0.5 }} />
       </Box>

@@ -14,7 +14,7 @@ import {
   setClipPublish,
 } from "../api";
 import type { Clip, Job } from "../api";
-import { EDGE, INK, MARK, MONO, SURFACE_2 } from "../theme";
+import { EDGE, MARK, MONO, ON_ACCENT, SURFACE_2 } from "../theme";
 
 interface Props {
   job: Job;
@@ -152,7 +152,7 @@ export default function Reel({
         </Stack>
       </Container>
 
-      <Box aria-hidden sx={{ height: 14, background: `repeating-linear-gradient(to right, ${INK} 0 12px, transparent 12px 26px)`, opacity: 0.85 }} />
+      <Box aria-hidden sx={{ height: 14, background: `repeating-linear-gradient(to right, var(--mui-palette-text-secondary) 0 12px, transparent 12px 26px)`, opacity: 0.85 }} />
 
       <Box sx={{ bgcolor: SURFACE_2, borderTop: "1px solid", borderBottom: "1px solid", borderColor: "divider" }}>
       <Container maxWidth="lg" sx={{ py: { xs: 5, md: 7 } }}>
@@ -265,7 +265,7 @@ export default function Reel({
                               sx={{
                                 mt: 1,
                                 color: "text.secondary",
-                                "& mark": { background: MARK, color: INK, padding: "0 3px" },
+                                "& mark": { background: MARK, color: ON_ACCENT, padding: "0 3px" },
                               }}
                               dangerouslySetInnerHTML={{
                                 __html: highlight(selectedClip.script, selectedClip.line),

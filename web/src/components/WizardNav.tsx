@@ -1,5 +1,5 @@
 import { Box, Typography } from "@mui/material";
-import { INK, MONO } from "../theme";
+import { INK, MARK, MONO } from "../theme";
 
 type Step = "ingest" | "clips" | "review" | "publish" | "accounts" | "analytics";
 
@@ -37,7 +37,7 @@ export default function WizardNav({ currentStep, completedSteps, onStepClick }: 
         display: "flex",
         justifyContent: "space-between",
         position: "relative",
-        px: { xs: 1, md: 2 },
+        px: { xs: 0.5, md: 2 },
         mb: 4,
         "&::before": {
           content: '""',
@@ -46,7 +46,7 @@ export default function WizardNav({ currentStep, completedSteps, onStepClick }: 
           left: 0,
           right: 0,
           height: 3,
-          background: "linear-gradient(90deg, #D6DBE2 50%, #1E3A8A 50%)",
+          background: "linear-gradient(90deg, var(--mui-palette-divider) 50%, var(--mui-palette-primary-main) 50%)",
           backgroundSize: `${100 / (STEPS.length - 1)}% 100%`,
           transform: "translateY(-50%)",
           zIndex: 0,
@@ -58,10 +58,23 @@ export default function WizardNav({ currentStep, completedSteps, onStepClick }: 
         const isCurrent = step.key === currentStep;
         const stepIndex = stepOrder.indexOf(step.key);
         const isFuture = stepIndex > currentIndex;
+        const canActivate = Boolean(onStepClick) && (isCompleted || isCurrent);
 
         return (
           <Box
             key={step.key}
+            role={onStepClick ? "button" : undefined}
+            tabIndex={canActivate ? 0 : -1}
+            aria-current={isCurrent ? "step" : undefined}
+            aria-disabled={!canActivate}
+            aria-label={`${step.label} — ${step.caption}${canActivate ? "" : ", no disponible"}`}
+            onKeyDown={(e) => {
+              if (onStepClick && (e.key === "Enter" || e.key === " ") && canActivate) {
+                e.preventDefault();
+                onStepClick(step.key);
+              }
+            }}
+            onClick={() => onStepClick?.(step.key)}
             sx={{
               display: "flex",
               flexDirection: "column",
@@ -70,12 +83,15 @@ export default function WizardNav({ currentStep, completedSteps, onStepClick }: 
               position: "relative",
               zIndex: 1,
               flex: 1,
-              cursor: onStepClick && (isCompleted || isCurrent) ? "pointer" : "default",
+              minWidth: 0,
+              cursor: canActivate ? "pointer" : "default",
               opacity: isFuture && !onStepClick ? 0.5 : 1,
+              transition: "opacity .2s ease",
+              "&:focus-visible": { outline: `2px solid ${MARK}`, outlineOffset: 2, borderRadius: 2 },
             }}
-            onClick={() => onStepClick?.(step.key)}
           >
             <Box
+              aria-hidden
               sx={{
                 width: 44,
                 height: 44,
@@ -85,16 +101,16 @@ export default function WizardNav({ currentStep, completedSteps, onStepClick }: 
                 justifyContent: "center",
                 fontSize: "1.2rem",
                 background: isCompleted || isCurrent
-                  ? "linear-gradient(135deg, #1E3A8A 0%, #3B6AD1 100%)"
-                  : "#D6DBE2",
-                color: isCompleted || isCurrent ? "#FFC647" : "#69707C",
-                border: isCurrent ? "3px solid #FFC647" : "none",
+                  ? "linear-gradient(135deg, var(--mui-palette-primary-main) 0%, #3B6AD1 100%)"
+                  : "var(--mui-palette-divider)",
+                color: isCompleted || isCurrent ? MARK : "text.secondary",
+                border: isCurrent ? `3px solid ${MARK}` : "none",
                 boxShadow: isCurrent
                   ? "0 0 0 4px rgba(255,198,71,0.3), 0 4px 12px rgba(30,58,138,0.3)"
                   : isCompleted
                   ? "0 0 0 2px rgba(255,198,71,0.2)"
                   : "none",
-                transition: "all 0.3s ease",
+                transition: "all .3s ease",
                 position: "relative",
                 "&::after": isCompleted
                   ? {
@@ -107,7 +123,7 @@ export default function WizardNav({ currentStep, completedSteps, onStepClick }: 
                       height: 0,
                       borderLeft: "6px solid transparent",
                       borderRight: "6px solid transparent",
-                      borderTop: "8px solid #1E3A8A",
+                      borderTop: "8px solid var(--mui-palette-primary-main)",
                     }
                   : undefined,
               }}
@@ -118,13 +134,16 @@ export default function WizardNav({ currentStep, completedSteps, onStepClick }: 
               variant="caption"
               sx={{
                 fontFamily: MONO,
-                fontSize: "0.6rem",
+                fontSize: { xs: "0.5rem", md: "0.6rem" },
                 fontWeight: 700,
                 letterSpacing: "0.08em",
                 textTransform: "uppercase",
                 color: isCompleted || isCurrent ? INK : "text.secondary",
                 textAlign: "center",
                 whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                maxWidth: "100%",
               }}
             >
               {step.label}
@@ -137,6 +156,8 @@ export default function WizardNav({ currentStep, completedSteps, onStepClick }: 
                 textAlign: "center",
                 whiteSpace: "nowrap",
                 maxWidth: 100,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
               }}
             >
               {step.caption}

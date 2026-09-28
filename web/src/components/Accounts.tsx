@@ -14,15 +14,17 @@ import {
   Grid,
   MenuItem,
   Paper,
+  Skeleton,
   Stack,
   TextField,
   Typography,
 } from "@mui/material";
 import { ACCOUNT_PLATFORM_LABELS, createAccount, deleteAccount, getAccounts, getYoutubeAuthUrl, updateAccount } from "../api";
 import type { AccountInput, LinkedAccount } from "../api";
-import { EDGE, INK, MARK, MONO, SURFACE } from "../theme";
+import { EDGE, MARK, MONO, ON_ACCENT, SURFACE } from "../theme";
 import ConfirmDialog from "./ConfirmDialog";
 import Branding from "./Branding";
+import { useToast } from "./ToastContext";
 
 const EMPTY: AccountInput = {
   platform: "youtube",
@@ -40,7 +42,9 @@ interface FormState extends AccountInput {
 }
 
 export default function Accounts() {
+  const toast = useToast();
   const [accounts, setAccounts] = useState<LinkedAccount[]>([]);
+  const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<LinkedAccount | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState<FormState>(EMPTY as FormState);
@@ -51,11 +55,14 @@ export default function Accounts() {
   const [deleteConfirm, setDeleteConfirm] = useState<LinkedAccount | null>(null);
 
   async function refresh() {
+    setLoading(true);
     try {
       setAccounts(await getAccounts());
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudieron cargar las cuentas");
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -67,7 +74,7 @@ export default function Accounts() {
     if (window.location.search.includes("youtube=connected")) {
       void refresh();
       window.history.replaceState({}, "", window.location.pathname);
-      setSuccessMsg("YouTube conectado. Ya puedes publicar clips desde ClipForge.");
+      setSuccessMsg("YouTube conectado. Ya puedes publicar clips desde Edgetape.");
     } else if (window.location.search.includes("youtube=error")) {
       window.history.replaceState({}, "", window.location.pathname);
       setError("No se pudo conectar YouTube. Revisa las credenciales y el token en la terminal del servidor.");
@@ -127,8 +134,10 @@ export default function Accounts() {
       else await createAccount(input);
       setShowForm(false);
       await refresh();
+      toast.success(editing ? "Cambios guardados" : "Cuenta vinculada");
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo guardar");
+      toast.error(err instanceof Error ? err.message : "No se pudo guardar");
     } finally {
       setBusy(false);
     }
@@ -144,6 +153,7 @@ export default function Accounts() {
       await deleteAccount(deleteConfirm.id);
       setDeleteConfirm(null);
       await refresh();
+      toast.success("Cuenta desvinculada");
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo eliminar");
       setDeleteConfirm(null);
@@ -187,7 +197,7 @@ export default function Accounts() {
             <Chip
               size="small"
               variant="filled"
-              sx={{ bgcolor: MARK, color: INK }}
+              sx={{ bgcolor: MARK, color: ON_ACCENT }}
               label={`${accounts.filter((a) => a.token).length} conectadas`}
             />
           </Stack>
@@ -199,7 +209,23 @@ export default function Accounts() {
           </Alert>
         )}
 
-        {accounts.length === 0 ? (
+        {loading ? (
+          <Grid container spacing={3} sx={{ mt: 1 }}>
+            {[0, 1, 2].map((i) => (
+              <Grid size={{ xs: 12, sm: 6, md: 4 }} key={i}>
+                <Paper sx={{ p: 3, height: "100%" }}>
+                  <Skeleton width={90} height={22} />
+                  <Skeleton width="60%" height={30} sx={{ mt: 1 }} />
+                  <Skeleton width="40%" height={16} sx={{ mt: 1 }} />
+                  <Stack direction="row" spacing={1} sx={{ mt: 2 }}>
+                    <Skeleton width={110} height={24} />
+                    <Skeleton width={110} height={24} />
+                  </Stack>
+                </Paper>
+              </Grid>
+            ))}
+          </Grid>
+        ) : accounts.length === 0 ? (
           <Paper sx={{ mt: 4, p: 5, textAlign: "center", borderStyle: "dashed" }}>
             <Typography variant="h6">No tienes cuentas vinculadas</Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 1, mb: 2 }}>
@@ -275,7 +301,7 @@ export default function Accounts() {
                           variant={apiReady ? "filled" : "outlined"}
                           sx={{
                             bgcolor: apiReady ? MARK : "transparent",
-                            color: apiReady ? INK : undefined,
+                            color: apiReady ? ON_ACCENT : undefined,
                             borderColor: apiReady ? MARK : undefined,
                             fontSize: "0.6rem",
                           }}
@@ -424,7 +450,7 @@ export default function Accounts() {
               ) : (
                 <Alert severity="info" sx={{ mt: 3 }}>
                   Por ahora <b>{ACCOUNT_PLATFORM_LABELS[form.platform] ?? form.platform}</b> se
-                  publica con respaldo: ClipForge exporta el clip y te deja el enlace directo de
+                  publica con respaldo: Edgetape exporta el clip y te deja el enlace directo de
                   subida con la cuenta atribuida. La publicación automática por API real (OAuth) está{" "}
                   <b>pendiente</b> para TikTok y Facebook.
                 </Alert>

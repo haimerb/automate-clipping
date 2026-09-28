@@ -1,38 +1,59 @@
 import { createTheme } from "@mui/material/styles";
 
-export const EDGE = "#1E3A8A";
-export const EDGE_SOFT = "rgba(30,58,138,0.08)";
-export const EDGE_DARK = "#152C6B";
-export const MARK = "#FFC647";
-export const MARK_SOFT = "rgba(255,198,71,0.15)";
-export const SURFACE = "#F5F3EE";
-export const SURFACE_2 = "#EDE9E1";
-export const CARD = "#FFFFFF";
-export const INK = "#14161A";
-export const MUTED = "#69707C";
-export const RAIL = "#D6DBE2";
-export const SIDEBAR_BG = "#0F172A";
+// Tokens semánticos reactivos al modo (claro/oscuro) vía CSS vars de MUI.
+// EDGE  = azul de acción (primary)
+// MARK  = acento verde (secondary)
+export const EDGE = "var(--mui-palette-primary-main)";
+export const EDGE_SOFT = "rgb(var(--mui-palette-primary-mainChannel) / 0.09)";
+export const EDGE_DARK = "var(--mui-palette-primary-dark)";
+export const MARK = "var(--mui-palette-secondary-main)";
+export const MARK_SOFT = "rgb(var(--mui-palette-secondary-mainChannel) / 0.14)";
+export const SURFACE = "var(--mui-palette-background-default)";
+export const SURFACE_2 = "var(--mui-palette-background-paper)";
+export const CARD = "var(--mui-palette-background-paper)";
+export const INK = "var(--mui-palette-text-primary)";
+export const MUTED = "var(--mui-palette-text-secondary)";
+export const RAIL = "var(--mui-palette-divider)";
+export const ON_ACCENT = "var(--mui-palette-secondary-contrastText)";
+export const SUCCESS = "var(--mui-palette-success-main)";
+export const SIDEBAR_BG = "#0B0E14";
 export const SIDEBAR_WIDTH = 256;
 export const SIDEBAR_TEXT = "rgba(255,255,255,0.6)";
 export const SIDEBAR_TEXT_ACTIVE = "#fff";
 export const SIDEBAR_HOVER = "rgba(255,255,255,0.08)";
-export const SIDEBAR_SELECTED = "rgba(255,198,71,0.12)";
+export const SIDEBAR_SELECTED = "rgba(0,255,136,0.12)";
 export const SIDEBAR_DISABLED = "rgba(255,255,255,0.25)";
-export const ERROR = "#C43D3D";
-export const SUCCESS = "#1E7A46";
-export const MONO = '"Fragment Mono", ui-monospace, monospace';
-export const SANS = '"Hanken Grotesk", system-ui, sans-serif';
+export const MONO = '"Fragment Mono", "Roboto Mono", ui-monospace, monospace';
+export const SANS = '"Inter", "Roboto", system-ui, sans-serif';
 
 export const theme = createTheme({
-  palette: {
-    mode: "light",
-    primary: { main: EDGE, light: "#3B6AD1", dark: EDGE_DARK },
-    secondary: { main: MARK, light: "#FFE08A", dark: "#CC9B2A" },
-    background: { default: SURFACE, paper: CARD },
-    text: { primary: INK, secondary: MUTED },
-    divider: RAIL,
-    error: { main: ERROR },
-    success: { main: SUCCESS },
+  cssVariables: { colorSchemeSelector: "class" },
+  defaultColorScheme: "dark",
+  colorSchemes: {
+    dark: {
+      palette: {
+        mode: "dark",
+        primary: { main: "#1E90FF", light: "#63B6FF", dark: "#0E66C8", contrastText: "#051220" },
+        secondary: { main: "#00FF88", light: "#7BFFC2", dark: "#00C869", contrastText: "#04240F" },
+        background: { default: "#0E1013", paper: "#171A1F" },
+        text: { primary: "#F2F4F8", secondary: "#98A0AE" },
+        divider: "#262B33",
+        error: { main: "#FF5D63" },
+        success: { main: "#28E08A" },
+      },
+    },
+    light: {
+      palette: {
+        mode: "light",
+        primary: { main: "#1E90FF", light: "#63B6FF", dark: "#0C66C9", contrastText: "#fff" },
+        secondary: { main: "#00C869", light: "#4DF59A", dark: "#009952", contrastText: "#04240F" },
+        background: { default: "#F5F3EE", paper: "#FFFFFF" },
+        text: { primary: "#14161A", secondary: "#69707C" },
+        divider: "#D6DBE2",
+        error: { main: "#C43D3D" },
+        success: { main: "#1E7A46" },
+      },
+    },
   },
   shape: { borderRadius: 3 },
   typography: {
@@ -60,13 +81,21 @@ export const theme = createTheme({
   components: {
     MuiCssBaseline: {
       styleOverrides: {
-        body: { WebkitFontSmoothing: "antialiased", background: SURFACE },
+        body: { WebkitFontSmoothing: "antialiased" },
         "::selection": { background: MARK, color: INK },
         mark: { background: MARK, color: INK, padding: "0 3px", borderRadius: 2 },
         "*:focus-visible": {
           outline: `2px solid ${EDGE}`,
           outlineOffset: 2,
           borderRadius: 3,
+        },
+        "@media (prefers-reduced-motion: reduce)": {
+          "*, *::before, *::after": {
+            animationDuration: "0.01ms !important",
+            animationIterationCount: "1 !important",
+            transitionDuration: "0.01ms !important",
+            scrollBehavior: "auto !important",
+          },
         },
       },
     },
@@ -85,7 +114,7 @@ export const theme = createTheme({
         root: {
           backgroundColor: CARD,
           color: INK,
-          boxShadow: "0 1px 3px rgba(20,22,26,.06)",
+          boxShadow: "0 1px 3px rgba(0,0,0,.35)",
           borderBottom: `1px solid ${RAIL}`,
         },
       },
@@ -116,7 +145,7 @@ export const theme = createTheme({
             backgroundColor: SIDEBAR_SELECTED,
             borderLeftColor: MARK,
             color: SIDEBAR_TEXT_ACTIVE,
-            "&:hover": { backgroundColor: "rgba(255,198,71,0.18)" },
+            "&:hover": { backgroundColor: "rgba(0,255,136,0.18)" },
           },
           "&.Mui-disabled": {
             color: SIDEBAR_DISABLED,
@@ -135,10 +164,10 @@ export const theme = createTheme({
         root: {
           border: `1px solid ${RAIL}`,
           borderRadius: 3,
-          boxShadow: "0 1px 2px rgba(20,22,26,.04), 0 4px 12px -4px rgba(20,22,26,.08)",
+          boxShadow: "0 1px 2px rgba(0,0,0,.12), 0 4px 12px -4px rgba(0,0,0,.28)",
           transition: "box-shadow 0.2s ease, transform 0.15s ease",
           "&:hover": {
-            boxShadow: "0 2px 4px rgba(20,22,26,.06), 0 8px 24px -8px rgba(20,22,26,.12)",
+            boxShadow: "0 2px 4px rgba(0,0,0,.16), 0 8px 24px -8px rgba(0,0,0,.4)",
           },
         },
       },
@@ -155,10 +184,10 @@ export const theme = createTheme({
           textTransform: "none" as const,
         },
         contained: {
-          background: INK,
-          color: "#fff",
+          background: EDGE,
+          color: "var(--mui-palette-primary-contrastText)",
           "&:hover": {
-            background: EDGE,
+            background: EDGE_DARK,
           },
         },
         outlined: {
@@ -234,9 +263,15 @@ export const theme = createTheme({
       styleOverrides: {
         root: {
           borderRadius: 3,
-          "&.MuiAlert-standardError": { backgroundColor: "rgba(196,61,61,.08)" },
-          "&.MuiAlert-standardInfo": { backgroundColor: EDGE_SOFT },
-          "&.MuiAlert-standardSuccess": { backgroundColor: "rgba(30,122,70,.08)" },
+          "&.MuiAlert-standardError": {
+            backgroundColor: "rgb(var(--mui-palette-error-mainChannel) / 0.1)",
+          },
+          "&.MuiAlert-standardInfo": {
+            backgroundColor: "rgb(var(--mui-palette-primary-mainChannel) / 0.1)",
+          },
+          "&.MuiAlert-standardSuccess": {
+            backgroundColor: "rgb(var(--mui-palette-success-mainChannel) / 0.1)",
+          },
         },
       },
     },
