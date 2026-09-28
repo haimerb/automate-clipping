@@ -46,7 +46,7 @@ FORMAT_LIMITS: dict[str, tuple[float, float]] = {
     "tiktok": (15.0, 60.0),
     "facebook_reels": (30.0, 90.0),
     "instagram_reels": (30.0, 90.0),
-    "youtube": (30.0, 180.0),
+    "youtube": (30.0, 900.0),
     "otros": (30.0, 120.0),
 }
 
