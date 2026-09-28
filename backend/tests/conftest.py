@@ -28,6 +28,8 @@ os.environ["EDGETAPE_EXPORT_MODE"] = "original"
 # Sin pausas deliberadas: metadata y cola de publicación inmediatas
 os.environ["EDGETAPE_METADATA_DELAY"] = "0"
 os.environ["EDGETAPE_QUEUE_TASK_DELAY"] = "0"
+# Sin imágenes por escena (Wikimedia) en tests: sin red, renders deterministas
+os.environ["EDGETAPE_AI_IMAGES"] = "0"
 # Sin probe de Ollama (evita timeouts de conexión ~2.5s por test)
 os.environ["EDGETAPE_OLLAMA_PROBE"] = "0"
 # Build_transcriber siempre devuelve el mock (evita cargar faster-whisper)
