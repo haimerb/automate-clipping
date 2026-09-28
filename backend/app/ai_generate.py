@@ -412,6 +412,12 @@ def _sentence_timings(sentences: list[str], total: float) -> tuple[list[float], 
     return starts, ends
 
 
+def _run_ffmpeg(cmd: list[str], timeout: int = 600) -> None:
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg ai render failed: {result.stderr.strip()}")
+
+
 def render_video(
     bg: Path,
     captions: list[Path],
@@ -421,24 +427,41 @@ def render_video(
     size: tuple[int, int],
     total: float,
     out: str | Path,
+    workdir: str | Path | None = None,
 ) -> Path:
-    """Ensambla el video final: zoom suave (Ken Burns) + subtítulos + voz."""
+    """Ensambla el video final en DOS pasadas (el render en una sola pasada con
+    todas las entradas en bucle infinito se estanca en frame 0 en ffmpeg):
+
+    1. zoom suave (Ken Burns) sobre el fondo → base.mp4
+    2. subtítulos (overlay con enable) + voz sobre la base → archivo final.
+    """
     w, h = size
-    inputs: list[str] = [
+    tmp_dir = Path(workdir) if workdir else Path(out).parent
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    base = tmp_dir / "_base.mp4"
+
+    # Paso 1: fondo con zoompan (Ken Burns).
+    _run_ffmpeg([
         FFMPEG, "-y", "-hide_banner", "-loglevel", "error",
         "-loop", "1", "-framerate", "30", "-t", f"{total:.3f}", "-i", str(bg),
-    ]
-    for cap in captions:
-        inputs += ["-loop", "1", "-framerate", "30", "-t", f"{total:.3f}", "-i", str(cap)]
+        "-filter_complex",
+        f"zoompan=z='min(zoom+0.0006,1.12)':d=1:"
+        f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={w}x{h}:fps=30,format=yuv420p",
+        "-t", f"{total:.3f}", "-c:v", "libx264", "-preset", "veryfast",
+        "-f", "mp4", str(base),
+    ])
+
+    # Paso 2: subtítulos + audio sobre la base (entrada 0 acotada: sin deadlock).
+    inputs: list[str] = [FFMPEG, "-y", "-hide_banner", "-loglevel", "error", "-i", str(base)]
+    for cap, st, en in zip(captions, starts, ends):
+        seg = max(0.5, en - st)
+        inputs += ["-loop", "1", "-framerate", "30", "-t", f"{seg:.3f}", "-i", str(cap)]
     audio_idx = 1 + len(captions)
     if audio:
         inputs += ["-i", audio]
 
-    parts = [
-        f"[0:v]zoompan=z='min(zoom+0.0006,1.12)':d=1:"
-        f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={w}x{h}:fps=30[base]"
-    ]
-    prev = "base"
+    parts: list[str] = []
+    prev = "0:v"
     for i in range(len(captions)):
         parts.append(f"[{i + 1}:v]format=rgba[c{i}]")
         parts.append(
@@ -454,9 +477,8 @@ def render_video(
         cmd += ["-map", "[a]", "-c:a", "aac", "-b:a", "128k"]
     cmd += ["-c:v", "libx264", "-preset", "veryfast", "-movflags", "+faststart",
             "-t", f"{total:.3f}", "-f", "mp4", str(out)]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-    if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg ai render failed: {result.stderr.strip()}")
+    _run_ffmpeg(cmd)
+
     if not Path(out).exists():
         raise RuntimeError("ffmpeg ai render no produjo archivo")
     return Path(out)
@@ -505,7 +527,7 @@ def generate_ai_video(meta: dict, meta_path: Path | None, source: str | Path, tm
     bg = _render_background(size, style, script_info["hook"] or prompt, tmp / "bg.png")
     starts, ends = _sentence_timings(script_info["sentences"], total)
     captions = _render_captions(script_info["sentences"], starts, ends, size, tmp)
-    render_video(bg, captions, audio, starts, ends, size, total, source)
+    render_video(bg, captions, audio, starts, ends, size, total, source, workdir=tmp)
 
     if meta_path is not None:
         try:
