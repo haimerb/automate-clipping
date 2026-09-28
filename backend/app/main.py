@@ -436,6 +436,14 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
                     f"Duración {body.duration}s supera el máximo de {body.platform} ({max_d:.0f}s)"
                 ),
             )
+        if body.platform == "youtube" and body.duration < aigen.YOUTUBE_MIN_LONG:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"YouTube video largo parte de {aigen.YOUTUBE_MIN_LONG:.0f}s "
+                    "(6 minutos); usá un formato vertical para piezas cortas"
+                ),
+            )
         auto_account: str | None = None
         if body.auto_publish:
             account = None

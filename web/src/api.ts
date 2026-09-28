@@ -565,6 +565,7 @@ export function pollJob(id: string, onUpdate: (job: Job) => void): Promise<Job> 
 
 export const PLATFORM_LABELS: Record<string, string> = {
   youtube_shorts: "YouTube Shorts",
+  youtube: "YouTube (video)",
   tiktok: "TikTok",
   facebook_reels: "Facebook Reels",
   instagram_reels: "Instagram Reels",

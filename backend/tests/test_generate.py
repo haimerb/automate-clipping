@@ -71,8 +71,16 @@ def test_generate_requires_auth(tmp_path: Path) -> None:
     assert resp.status_code == 401
 
 
-def test_generate_endpoint_validations(tmp_path: Path, auth_headers) -> None:
+def test_generate_endpoint_validations(
+    tmp_path: Path, auth_headers, monkeypatch: pytest.MonkeyPatch
+) -> None:
     client = _client(tmp_path)
+
+    async def _noop(*args, **kwargs) -> None:
+        return None
+
+    monkeypatch.setattr("app.processing.run_job", _noop)
+
     # prompt vacío
     assert (
         client.post("/api/generate", json={"prompt": "   "}, headers=auth_headers).status_code
@@ -88,13 +96,36 @@ def test_generate_endpoint_validations(tmp_path: Path, auth_headers) -> None:
         headers=auth_headers,
     )
     assert resp.status_code == 422
-    # duración sobre el máximo de YouTube largo (180s)
+    # YouTube video largo arranca en 6 minutos: por debajo del piso → 422
     resp = client.post(
         "/api/generate",
-        json={"prompt": PROMPT, "duration": 180, "platform": "youtube"},
+        json={"prompt": PROMPT, "duration": 120, "platform": "youtube"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 422
+    # 6 min exactos → OK
+    resp = client.post(
+        "/api/generate",
+        json={"prompt": PROMPT, "duration": 360, "platform": "youtube"},
         headers=auth_headers,
     )
     assert resp.status_code == 202
+    # 15 min (máximo de YouTube largo) → OK
+    resp = client.post(
+        "/api/generate",
+        json={"prompt": PROMPT, "duration": 900, "platform": "youtube"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 202
+    # sobre el nuevo máximo (15 min) → 422
+    assert (
+        client.post(
+            "/api/generate",
+            json={"prompt": PROMPT, "duration": 960, "platform": "youtube"},
+            headers=auth_headers,
+        ).status_code
+        == 422
+    )
 
 
 def test_generate_endpoint_creates_job(

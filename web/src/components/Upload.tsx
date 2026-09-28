@@ -54,8 +54,12 @@ const PLATFORM_MAX: Record<string, number> = {
   tiktok: 60,
   facebook_reels: 90,
   instagram_reels: 90,
-  youtube: 180,
+  youtube: 900,
   otros: 120,
+};
+
+const PLATFORM_MIN: Record<string, number> = {
+  youtube: 360,
 };
 
 const PLATFORM_LABEL: Record<string, string> = {
@@ -67,7 +71,15 @@ const PLATFORM_LABEL: Record<string, string> = {
   otros: "Otro formato",
 };
 
-const GENERATE_DURATIONS = [15, 30, 60, 90, 120, 180];
+const GENERATE_DURATIONS = [
+  15, 30, 60, 90, 120, 180, 360, 420, 480, 540, 600, 660, 720, 780, 840, 900,
+];
+
+function platformCapLabel(platform: string): string {
+  if (platform === "youtube") return "6–15 min";
+  const cap = PLATFORM_MAX[platform] ?? 120;
+  return `máx ${cap}s`;
+}
 
 const STYLES: Record<string, string> = {
   professional: "Profesional",
@@ -287,7 +299,7 @@ export default function Upload({ onReady, onOpenJob }: Props) {
                 >
                   {Object.entries(PLATFORM_LABEL).map(([key, label]) => (
                     <MenuItem key={key} value={key}>
-                      {label} · máx {PLATFORM_MAX[key]}s
+                      {label} · {platformCapLabel(key)}
                     </MenuItem>
                   ))}
                 </Select>
@@ -306,8 +318,16 @@ export default function Upload({ onReady, onOpenJob }: Props) {
                     onChange={(e) => setGenDuration(Number(e.target.value))}
                     disabled={busy}
                   >
-                    {GENERATE_DURATIONS.filter((d) => d <= (PLATFORM_MAX[genPlatform] ?? 120)).map(
-                      (d) => (
+                    {GENERATE_DURATIONS.filter(
+                      (d) =>
+                        d <= (PLATFORM_MAX[genPlatform] ?? 120) &&
+                        d >= (PLATFORM_MIN[genPlatform] ?? 0),
+                    ).map((d) =>
+                      d >= 360 ? (
+                        <MenuItem key={d} value={d}>
+                          {d / 60} minutos
+                        </MenuItem>
+                      ) : (
                         <MenuItem key={d} value={d}>
                           {d} segundos
                         </MenuItem>

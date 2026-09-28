@@ -25,9 +25,13 @@ from .media import FFMPEG, FFPROBE, _emoji_strip, _find_font, probe_duration
 
 logger = logging.getLogger(__name__)
 
-# Duraciones aceptadas por /api/generate (los límites reales de publicación los pone
-# scorer.FORMAT_LIMITS: shorts/tiktok ≤60, reels ≤90, youtube ≤180).
-GENERATE_DURATIONS = [15, 30, 60, 90, 120, 180]
+# Duraciones aceptadas por /api/generate. Los verticales mantienen sus límites reales
+# de publicación (lea scorer.FORMAT_LIMITS: shorts/tiktok ≤60, reels ≤90); YouTube
+# (video largo) ofrece de 6 a 15 minutos.
+GENERATE_DURATIONS = [15, 30, 60, 90, 120, 180, 360, 420, 480, 540, 600, 660, 720, 780, 840, 900]
+
+# Piso del formato largo de YouTube (no se ofrecen longs de menos de 6 minutos).
+YOUTUBE_MIN_LONG = 360.0
 
 DEFAULT_VOICE = "es-MX-DaliaNeural"
 
