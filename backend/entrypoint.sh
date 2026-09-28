@@ -3,12 +3,17 @@ set -e
 
 ROLE="${EDGETAPE_ROLE:-all}"
 PORT="${PORT:-8000}"
+# En Linux (contenedor) prefork deja que una tarea dormida (p. ej. esperando
+# reset de cuota de YouTube) no congele el resto de la cola. En Windows/desarrollo
+# seguir usándose solo: EDGETAPE_WORKER_POOL=solo.
+WORKER_POOL="${EDGETAPE_WORKER_POOL:-prefork}"
+WORKER_CONCURRENCY="${EDGETAPE_WORKER_CONCURRENCY:-4}"
 
 echo "[entrypoint] role=${ROLE} port=${PORT}"
 
 start_worker() {
-  echo "[entrypoint] lanzando celery worker..."
-  celery -A app.tasks worker --pool=solo --loglevel=info &
+  echo "[entrypoint] lanzando celery worker (pool=${WORKER_POOL}, concurrency=${WORKER_CONCURRENCY})..."
+  celery -A app.tasks worker --pool="${WORKER_POOL}" --concurrency="${WORKER_CONCURRENCY}" --loglevel=info &
   CELERY_PID=$!
   echo "[entrypoint] celery worker pid=${CELERY_PID}"
 }
