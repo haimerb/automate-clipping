@@ -10,7 +10,8 @@ opcional — vertical (Shorts/Reels/TikTok) u horizontal (YouTube video largo).
 Degradación en cascada (nunca queda mudo):
 - sin LLM → el prompt es el guion (keywords derivadas del texto);
 - sin TTS → el video sale sin voz (con música si se pidió);
-- sin b-roll → fotos de stock → fotos de Wikimedia → fondos de marca variados;
+- sin b-roll → fotos de stock → material generado por IA (opcional) → Wikimedia
+  → fondos de marca variados;
 - si el render por escenas falla → el render legacy de un solo fondo;
 - cada degradación se registra en `warnings` y viaja al job (no falla en silencio);
 - si todo falla → el pipeline cae al mock de ffmpeg.
@@ -30,6 +31,7 @@ from pathlib import Path
 import httpx
 
 from . import materials
+from . import videogen
 from .media import FFMPEG, FFPROBE, _emoji_strip, _find_font, probe_duration
 from .scorer import _content_words
 
@@ -686,6 +688,39 @@ def _fetch_scene_images(
     return _fetch_wikimedia_images(sentences, size, tmp, max_total, per_request)
 
 
+def _try_videogen(
+    pending: list[int],
+    sentences: list[str],
+    queries: list[str] | None,
+    size: tuple[int, int],
+    tmp: Path,
+    assets: list[tuple[Path | None, bool]],
+) -> list[int]:
+    """Rellena con material generado por IA las escenas donde el stock falló.
+
+    Va DESPUÉS del stock (gratis) y ANTES de Wikimedia. Es un proveedor de pago,
+    así que se limita a `EDGETAPE_VIDEOGEN_MAX_SCENES` escenas (1 por defecto)
+    para no quemar cuota. Nunca lanza: cualquier fallo cae a Wikimedia.
+    """
+    if not videogen.is_configured() or os.environ.get("EDGETAPE_VIDEOGEN", "1") == "0":
+        return pending
+    try:
+        budget = max(0, int(os.environ.get("EDGETAPE_VIDEOGEN_MAX_SCENES", "1")))
+    except ValueError:
+        budget = 1
+    if budget <= 0:
+        return pending
+    for i in pending[:budget]:
+        prompt = (queries[i] if queries and i < len(queries) else "") or _scene_query(sentences[i])
+        if not prompt:
+            continue
+        path, is_video = videogen.generate_asset(prompt, size, tmp / f"scene_{i}.asset")
+        if path is not None:
+            assets[i] = (path, is_video)
+            logger.info("escena %d: material generado por IA · %s", i, prompt[:60])
+    return [i for i in pending if assets[i][0] is None]
+
+
 def _fetch_scene_media(
     sentences: list[str], queries: list[str] | None, size: tuple[int, int], tmp: Path,
     max_total: float = 90.0, per_request: float = 12.0,
@@ -727,6 +762,8 @@ def _fetch_scene_media(
             i for i in range(n)
             if assets[i][0] is None and i != 0 and not (i == n - 1 and n > 1)
         ]
+        if pending:
+            pending = _try_videogen(pending, sentences, queries, size, tmp, assets)
         if pending:
             images = _fetch_wikimedia_images(
                 sentences, size, tmp,
