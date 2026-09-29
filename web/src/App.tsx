@@ -22,7 +22,6 @@ import Publish from "./components/Publish";
 import Review from "./components/Review";
 import Accounts from "./components/Accounts";
 import Auth from "./components/Auth";
-import ConfirmDialog from "./components/ConfirmDialog";
 import WizardNav from "./components/WizardNav";
 import { getClips, getJob, getMe, getToken, setToken } from "./api";
 import type { Clip, Job, User } from "./api";
@@ -372,7 +371,8 @@ export default function App() {
   const [job, setJob] = useState<Job | null>(null);
   const [clips, setClips] = useState<Clip[]>([]);
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [notReadyAlert, setNotReadyAlert] = useState(false);
+  const [resumeJob, setResumeJob] = useState<Job | null>(null);
+  const [jobError, setJobError] = useState<string | null>(null);
 
   const step = ROUTE_STEPS[location.pathname] ?? "ingest";
 
@@ -407,13 +407,22 @@ export default function App() {
     getMe()
       .then(setUser)
       .catch(() => setToken(null));
-    if (savedJobId) {
-      getJob(savedJobId).then((j) => {
+    if (!savedJobId) return;
+    // Tras un F5 el job sigue en el servidor: se recupera en cualquier estado,
+    // no solo cuando ya terminó (antes se perdía el progreso en curso).
+    getJob(savedJobId)
+      .then((j) => {
         if (j.status === "done") {
-          handleReady(j);
+          void handleReady(j);
+        } else if (j.status === "failed") {
+          setJobError(j.error ?? "El job falló");
+          goTo("ingest");
+        } else {
+          setResumeJob(j);
+          goTo("ingest");
         }
-      }).catch(() => {});
-    }
+      })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -443,11 +452,15 @@ export default function App() {
     setJob(null);
     setClips([]);
     setCompletedSteps([]);
+    setResumeJob(null);
+    setJobError(null);
     localStorage.removeItem(STORAGE_KEY);
     goTo("ingest");
   }
 
   async function handleReady(finished: Job) {
+    setResumeJob(null);
+    setJobError(null);
     let found: Clip[] = [];
     for (let i = 0; i < 5; i++) {
       found = await getClips(finished.id);
@@ -463,11 +476,20 @@ export default function App() {
 
   async function openJob(jobId: string) {
     const found = await getJob(jobId);
-    if (found.status !== "done") {
-      setNotReadyAlert(true);
+    if (found.status === "done") {
+      await handleReady(found);
       return;
     }
-    await handleReady(found);
+    if (found.status === "failed") {
+      setResumeJob(null);
+      setJobError(found.error ?? "Ese video falló al procesarse");
+      goTo("ingest");
+      return;
+    }
+    // sigue en cola o procesándose: se retoma el seguimiento en INGRESAR
+    setJobError(null);
+    setResumeJob(found);
+    goTo("ingest");
   }
 
   function markCompleted(stepName: WizardStep) {
@@ -502,6 +524,8 @@ export default function App() {
     setJob(null);
     setClips([]);
     setCompletedSteps([]);
+    setResumeJob(null);
+    setJobError(null);
     localStorage.removeItem(STORAGE_KEY);
     goTo("ingest");
   }
@@ -647,7 +671,14 @@ export default function App() {
             onStepClick={(s) => canGoTo(s) && goTo(s)}
           />
 
-          {step === "ingest" && <Upload onReady={(j) => void handleReady(j)} onOpenJob={openJob} />}
+          {step === "ingest" && (
+            <Upload
+              onReady={(j) => void handleReady(j)}
+              onOpenJob={openJob}
+              resumeJob={resumeJob}
+              notice={jobError}
+            />
+          )}
           {step === "clips" && job && (
             <Reel
               job={job}
@@ -702,16 +733,6 @@ export default function App() {
           </Stack>
         </Box>
       </Box>
-      <ConfirmDialog
-        open={notReadyAlert}
-        title="Video no listo"
-        message="Este video aún no está listo para ver clips. Espera a que termine de procesarse."
-        confirmLabel="Entendido"
-        cancelLabel=""
-        severity="info"
-        onConfirm={() => setNotReadyAlert(false)}
-        onCancel={() => setNotReadyAlert(false)}
-      />
     </Box>
   );
 }
