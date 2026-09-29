@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { DragEvent, FormEvent } from "react";
 import {
   Alert,
@@ -46,6 +46,10 @@ import PipelineProgress from "./PipelineProgress";
 interface Props {
   onReady: (job: Job) => void;
   onOpenJob: (jobId: string) => void;
+  /** Job que venía en curso de una sesión anterior: se retoma su seguimiento. */
+  resumeJob?: Job | null;
+  /** Aviso del job anterior (falló al procesarse). */
+  notice?: string | null;
 }
 
 type Source = "file" | "url" | "ai";
@@ -105,7 +109,7 @@ const STATUS_LABEL: Record<string, string> = {
   failed: "Falló",
 };
 
-export default function Upload({ onReady, onOpenJob }: Props) {
+export default function Upload({ onReady, onOpenJob, resumeJob, notice }: Props) {
   const [source, setSource] = useState<Source>("file");
   const [busy, setBusy] = useState(false);
   const [job, setJob] = useState<Job | null>(null);
@@ -115,6 +119,7 @@ export default function Upload({ onReady, onOpenJob }: Props) {
   const [url, setUrl] = useState("");
   const [recent, setRecent] = useState<Job[]>([]);
   const [uploadPct, setUploadPct] = useState<number | null>(null);
+  const resumedRef = useRef<string | null>(null);
 
   const [prompt, setPrompt] = useState("");
   const [genPlatform, setGenPlatform] = useState("youtube_shorts");
@@ -138,6 +143,31 @@ export default function Upload({ onReady, onOpenJob }: Props) {
       .then((r) => setMusicTracks(r.tracks))
       .catch(() => setMusicTracks([]));
   }, []);
+
+  // El job sigue vivo en el servidor tras recargar la página: se retoma aquí.
+  useEffect(() => {
+    if (!resumeJob || resumedRef.current === resumeJob.id) return;
+    resumedRef.current = resumeJob.id;
+    setError(null);
+    setJob(resumeJob);
+    setLabel(resumeJob.filename);
+    setBusy(true);
+    let alive = true;
+    pollJob(resumeJob.id, (j) => {
+      if (alive) setJob(j);
+    })
+      .then((finished) => {
+        if (alive) onReady(finished);
+      })
+      .catch((err) => {
+        if (!alive) return;
+        setError(err instanceof Error ? err.message : "No se pudo seguir ese video");
+        setBusy(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [resumeJob?.id]);
 
   async function process(promise: Promise<Job>, doneLabel: string) {
     setError(null);
@@ -544,6 +574,11 @@ export default function Upload({ onReady, onOpenJob }: Props) {
           </Box>
         )}
 
+        {notice && (
+          <Alert severity="error" sx={{ mt: 3 }}>
+            {notice}
+          </Alert>
+        )}
         {error && (
           <Alert severity="error" sx={{ mt: 3 }}>
             {error}
