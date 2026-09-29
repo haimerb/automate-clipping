@@ -213,6 +213,16 @@ El selector LLM se activa si existe cualquiera de las variables `EDGETAPE_LLM_*`
 > User-Agent de navegador. Para casos persistentes, exporta tus cookies de YouTube a un archivo
 > Netscape (p. ej. con una extensión de cookies) y apúntalo con `EDGETAPE_YT_COOKIES`.
 
+## Deploy
+
+- [`docs/deploy-remoto.md`](docs/deploy-remoto.md) — **runbook paso a paso**: dominio y
+  `EDGETAPE_PUBLIC_BASE_URL`, registro de las apps de TikTok / Meta / Google Cloud, por qué
+  Instagram necesita una URL pública firmada, y **rotación de las claves expuestas**.
+  Empezá por ahí si vas a publicar de verdad.
+- [`docs/deploy-free.md`](docs/deploy-free.md) — alojamiento gratuito (HF Spaces + Neon + Upstash)
+  y el límite diario del canal de YouTube.
+- [`docs/pipeline.mmd`](docs/pipeline.mmd) — diagrama del flujo.
+
 ## Próximos pasos / extensiones naturales
 
 - Importar vistas/ganancias automáticamente desde YouTube Analytics / TikTok / Meta APIs.

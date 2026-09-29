@@ -1,4 +1,14 @@
-# Diagramas del flujo
+# Documentación de edgetape
+
+## `deploy-remoto.md`
+
+Runbook de despliegue y credenciales: dominio público y `EDGETAPE_PUBLIC_BASE_URL`, registro de
+las apps de TikTok, Meta y Google Cloud, y rotación de claves. Es el primero que hay que leer
+para publicar de verdad.
+
+## `deploy-free.md`
+
+Alojamiento sin tarjeta (HF Spaces + Neon + Upstash) y el límite diario del canal de YouTube.
 
 ## `pipeline.mmd`
 
