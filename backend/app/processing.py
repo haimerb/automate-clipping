@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import shutil
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -70,6 +71,10 @@ async def _ensure_source(job, store: JobStore):
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("ai_generate falló (%s); usando mock de ffmpeg", exc)
+            prev = job.warning
+            note = "el generador con IA falló y se usó un video de prueba"
+            job.warning = f"{prev}; {note}" if prev else note
+            store.save_job(job)
             await asyncio.to_thread(_create_mock_video, duration, source)
         return source
 
@@ -82,6 +87,24 @@ async def _ensure_source(job, store: JobStore):
     if title:
         job.filename = title
     return Path(path)
+
+
+def _cleanup_ai_tmp(tmp: Path) -> None:
+    """Borra los segmentos de render (el export ya está en `exports/`).
+
+    Un job de 15 min deja cientos de MB de `_seg*.mp4` que nunca se vuelven a usar.
+    """
+    if not tmp.is_dir():
+        return
+    total = 0
+    for f in tmp.rglob("*"):
+        if f.is_file():
+            try:
+                total += f.stat().st_size
+            except OSError:
+                pass
+    shutil.rmtree(tmp, ignore_errors=True)
+    logger.info("temporales de render eliminados: %.1f MB", total / 1e6)
 
 
 def _extract_thumbnails(source: Path, clips: list[Clip], exports_dir: Path) -> None:
@@ -154,6 +177,10 @@ async def run_job(job_id: str, store: JobStore, transcriber, selector=None) -> N
             script_text = str(script_info.get("script") or prompt)[:3000]
             hook = str(script_info.get("hook") or prompt)[:120]
             title_hint = str(script_info.get("title") or prompt)[:60]
+            notes = [str(w) for w in (script_info.get("warnings") or []) if str(w).strip()]
+            if notes:
+                job.warning = "; ".join(notes)
+                store.save_job(job)
             _, max_dur = _limits_for(platform)
             clip_dur = min(duration, max_dur) if max_dur > 0 else duration
             clips = [
@@ -205,6 +232,7 @@ async def run_job(job_id: str, store: JobStore, transcriber, selector=None) -> N
             job.clip_count = len(clips)
             job.status = "done"
             job.progress = 100
+            _cleanup_ai_tmp(store.job_dir(job.id) / "ai_tmp")
             auto_name = meta.get("auto_publish_account")
             if meta.get("auto_publish") and auto_name:
                 job.auto_publish = True

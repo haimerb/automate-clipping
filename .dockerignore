@@ -11,3 +11,5 @@ web/dist
 *.wav
 *.mp3
 *.log
+# ...pero las pistas de música de fondo sí viajan a la imagen
+!backend/assets/music/**

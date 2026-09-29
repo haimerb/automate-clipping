@@ -473,6 +473,7 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
             "style": body.style,
             "platform": body.platform,
             "voice": body.voice,
+            "music": body.music,
             "auto_publish": body.auto_publish,
             "account_id": body.account_id,
             "auto_publish_account": auto_account,
@@ -485,6 +486,11 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
             from .processing import run_job as _run
             await _run(job.id, store, tsc, sel)
         return {"job_id": job.id, "status": "queued"}
+
+    @app.get("/api/music")
+    def music_tracks(user: User = Depends(get_current_user)) -> dict:
+        """Pistas de fondo disponibles para el generador (mp3/m4a/wav/ogg)."""
+        return {"tracks": aigen.list_music_tracks()}
 
     # ── publicación real en YouTube ──────────────────
 

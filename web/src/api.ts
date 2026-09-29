@@ -7,6 +7,7 @@ export interface Job {
   status: "queued" | "downloading" | "processing" | "done" | "failed";
   progress: number;
   error: string | null;
+  warning: string | null;
   duration: number | null;
   transcriber: string | null;
   scorer: string | null;
@@ -352,6 +353,7 @@ export interface GenerateInput {
   style: string;
   platform: string;
   voice: string;
+  music: string;
   auto_publish: boolean;
   account_id?: string;
 }
@@ -362,6 +364,10 @@ export function generateVideo(input: GenerateInput): Promise<{ job_id: string; s
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
   });
+}
+
+export function getMusicTracks(): Promise<{ tracks: string[] }> {
+  return request<{ tracks: string[] }>("/api/music");
 }
 
 export function getJob(id: string): Promise<Job> {
