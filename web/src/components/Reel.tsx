@@ -6,10 +6,12 @@ import BarWave from "./BarWave";
 import MonetizationPanel from "./MonetizationPanel";
 import ConfirmDialog from "./ConfirmDialog";
 import {
+  deleteJobMedia,
   downloadUrl,
   exportClip,
   formatDuration,
   formatTimecode,
+  regenerateJob,
   reprocessJob,
   setClipPublish,
 } from "../api";
@@ -23,6 +25,7 @@ interface Props {
   onGoReview: () => void;
   onReset: () => void;
   onDashboard: () => void;
+  onRegenerated?: () => void;
 }
 
 function highlight(script: string, line: string): string {
@@ -39,15 +42,45 @@ export default function Reel({
   onGoReview,
   onReset,
   onDashboard,
+  onRegenerated,
 }: Props) {
   const [selected, setSelected] = useState<Clip | null>(clips[0] ?? null);
   const [busy, setBusy] = useState<string | null>(null);
   const [reprocessing, setReprocessing] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
+  const [askRegenerate, setAskRegenerate] = useState(false);
+  const [askFree, setAskFree] = useState(false);
+  const [freed, setFreed] = useState<string | null>(null);
   const [errorDialog, setErrorDialog] = useState<string | null>(null);
+  const esIA = job.source === "generate";
 
   const selectedClip = selected ? clips.find((c) => c.id === selected.id) ?? selected : null;
   const toPublish = clips.filter((c) => c.publish).length;
   const fuente = job.source === "youtube" || job.source === "url" ? "enlace" : "archivo";
+
+  async function onRegenerate() {
+    setRegenerating(true);
+    setAskRegenerate(false);
+    try {
+      await regenerateJob(job.id);
+      onRegenerated?.();
+    } catch (err) {
+      setErrorDialog(err instanceof Error ? err.message : "No se pudo regenerar el video");
+    } finally {
+      setRegenerating(false);
+    }
+  }
+
+  async function onFreeSpace() {
+    setAskFree(false);
+    try {
+      const res = await deleteJobMedia(job.id);
+      const mb = res.freed_bytes / (1024 * 1024);
+      setFreed(mb >= 1 ? `Liberaste ${mb.toFixed(1)} MB de disco` : `Liberaste ${(res.freed_bytes / 1024).toFixed(0)} KB de disco`);
+    } catch (err) {
+      setErrorDialog(err instanceof Error ? err.message : "No se pudo liberar el espacio");
+    }
+  }
 
   async function onExport(clip: Clip) {
     setBusy(clip.id);
@@ -139,6 +172,16 @@ export default function Reel({
           >
             {reprocessing ? "Regenerando…" : "Regenerar metadata"}
           </Button>
+          {esIA && (
+            <Button
+              variant="outlined"
+              onClick={() => setAskRegenerate(true)}
+              disabled={regenerating}
+              sx={{ alignSelf: { xs: "stretch", sm: "flex-start" } }}
+            >
+              {regenerating ? "Renderizando…" : "Regenerar video con IA"}
+            </Button>
+          )}
           <Button
             variant="contained"
             onClick={onGoReview}
@@ -291,7 +334,7 @@ export default function Reel({
       </Box>
 
       <Container maxWidth="lg" sx={{ py: 4 }}>
-        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ justifyContent: "center" }}>
+        <Stack direction="row" spacing={1.5} sx={{ justifyContent: "center", flexWrap: "wrap" }}>
           <Button variant="contained" onClick={onGoReview} disabled={toPublish === 0}>
             {toPublish === 0 ? "Marca clips para continuar" : `Continuar a REVISAR (${toPublish} clips)`}
           </Button>
@@ -302,12 +345,52 @@ export default function Reel({
           >
             {reprocessing ? "Regenerando…" : "Regenerar metadata"}
           </Button>
+          {esIA && (
+            <Button
+              variant="outlined"
+              onClick={() => setAskRegenerate(true)}
+              disabled={regenerating}
+            >
+              {regenerating ? "Renderizando…" : "Regenerar video con IA"}
+            </Button>
+          )}
+          <Button variant="outlined" onClick={() => setAskFree(true)}>
+            Liberar espacio en disco
+          </Button>
           <Button variant="outlined" onClick={onDashboard}>
             Ver panel de ganancias
           </Button>
           <Button onClick={onReset}>Procesar otra grabación</Button>
         </Stack>
+        {freed && (
+          <Typography
+            variant="body2"
+            sx={{ mt: 2, textAlign: "center", color: "text.secondary" }}
+          >
+            {freed}. El job sigue en el panel y puedes volver a generarlo cuando quieras.
+          </Typography>
+        )}
       </Container>
+      <ConfirmDialog
+        open={askRegenerate}
+        title="Regenerar el video"
+        message="Se va a renderizar de nuevo con el motor actual (b-roll de stock, música y guion nuevos). La versión anterior se guarda en previous/ por si el resultado es peor. Los clips y las publicaciones registradas se conservan."
+        confirmLabel="Regenerar"
+        cancelLabel="Cancelar"
+        severity="warning"
+        onConfirm={() => void onRegenerate()}
+        onCancel={() => setAskRegenerate(false)}
+      />
+      <ConfirmDialog
+        open={askFree}
+        title="Liberar espacio"
+        message="Se borran el video de origen, los clips exportados y las versiones previas. El job sigue listado con sus clips y publicaciones, pero ocupa mucho menos disco."
+        confirmLabel="Liberar"
+        cancelLabel="Cancelar"
+        severity="warning"
+        onConfirm={() => void onFreeSpace()}
+        onCancel={() => setAskFree(false)}
+      />
       <ConfirmDialog
         open={errorDialog !== null}
         title="Error"

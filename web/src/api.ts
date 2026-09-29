@@ -497,6 +497,26 @@ export function reprocessJob(jobId: string): Promise<Clip[]> {
   return request<Clip[]>(`/api/jobs/${jobId}/reprocess`, { method: "POST" });
 }
 
+export interface RegenerateBody {
+  music?: string;
+  style?: string;
+  voice?: string;
+  duration?: number;
+}
+
+export function regenerateJob(jobId: string, body: RegenerateBody = {}): Promise<{ job_id: string }> {
+  return request<{ job_id: string }>(`/api/jobs/${jobId}/regenerate`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteJobMedia(jobId: string): Promise<{ job_id: string; freed_bytes: number }> {
+  return request<{ job_id: string; freed_bytes: number }>(`/api/jobs/${jobId}/media`, {
+    method: "DELETE",
+  });
+}
+
 export function withToken(url: string): string {
   const token = getToken();
   return token ? `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}` : url;

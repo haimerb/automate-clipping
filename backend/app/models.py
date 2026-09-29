@@ -190,6 +190,15 @@ class GenerateRequest(BaseModel):
     account_id: str | None = None
 
 
+class RegenerateRequest(BaseModel):
+    """Overrides opcionales al volver a renderizar un job generado con IA."""
+
+    music: str | None = None
+    style: str | None = None
+    voice: str | None = None
+    duration: int | None = None
+
+
 class MetadataUpdate(BaseModel):
     title: str | None = None
     description: str | None = None

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,6 +37,110 @@ class JobStore:
 
     def exports_dir(self, job_id: str) -> Path:
         return self.job_dir(job_id) / "exports"
+
+    def archive_dir(self, job_id: str) -> Path:
+        """Versiones previas del source, creadas al re-renderizar un job `generate`."""
+        return self.job_dir(job_id) / "previous"
+
+    def _source_candidates(self, job_id: str) -> list[Path]:
+        exact = self.upload_path(job_id)
+        return [
+            p
+            for p in exact.parent.glob(exact.name + ".*")
+            if p.suffix not in {".part", ".ytdl", ".json"}
+        ]
+
+    def archive_source(self, job_id: str) -> Path | None:
+        """Mueve (no copia) la fuente actual a `previous/source_<n>.<ext>`.
+
+        Se usa antes de un re-render para no perder el video bueno si el
+        generador falla: el pipeline vuelve a crear `source` desde cero.
+        """
+        source = self.source_path(job_id)
+        if not source.exists():
+            return None
+        dest_dir = self.archive_dir(job_id)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        n = 1
+        while True:
+            dest = dest_dir / f"source_{n}{source.suffix}"
+            if not dest.exists():
+                break
+            n += 1
+        shutil.move(str(source), str(dest))
+        return dest
+
+    def purge_media(self, job_id: str) -> int:
+        """Borra source, exports, ai_tmp y previous. Devuelve los bytes liberados.
+
+        Conserva `job.json`, `clips.json`, `posts.json` y `generate_meta.json`:
+        el job sigue listado y se puede volver a renderizar desde su metadata.
+        """
+        freed = 0
+        job_dir = self.job_dir(job_id)
+        targets: list[Path] = list(self._source_candidates(job_id))
+        if self.upload_path(job_id).exists():
+            targets.append(self.upload_path(job_id))
+        for folder in (self.exports_dir(job_id), job_dir / "ai_tmp", self.archive_dir(job_id)):
+            if not folder.exists():
+                continue
+            for child in folder.rglob("*"):
+                if child.is_file():
+                    freed += child.stat().st_size
+            shutil.rmtree(folder, ignore_errors=True)
+        for path in targets:
+            if path.exists():
+                freed += path.stat().st_size
+                path.unlink(missing_ok=True)
+        return freed
+
+    def sweep_media(self, max_age_days: float = 7.0, keep: int = 1) -> dict[str, int]:
+        """Limpieza global: recorta `previous/` y elimina `ai_tmp` huérfanos.
+
+        - `previous/`: como máximo `keep` versiones por job y solo si son más
+          antiguas que `max_age_days`.
+        - `ai_tmp/`: carpetas sin `job.json` (job borrado a mitad) o de jobs ya
+          terminados hace más de `max_age_days`.
+        """
+        import time
+
+        now = time.time()
+        removed_files = 0
+        freed = 0
+        for child in self.root.iterdir():
+            if not child.is_dir():
+                continue
+            archive = self.archive_dir(child.name)
+            if archive.is_dir():
+                versions = sorted(
+                    (p for p in archive.iterdir() if p.is_file()),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
+                )
+                for old in versions[keep:]:
+                    if now - old.stat().st_mtime < max_age_days * 86400:
+                        continue
+                    freed += old.stat().st_size
+                    old.unlink(missing_ok=True)
+                    removed_files += 1
+                if not any(archive.iterdir()):
+                    archive.rmdir()
+
+            tmp = child / "ai_tmp"
+            if not tmp.is_dir():
+                continue
+            job_file = child / "job.json"
+            stale = not job_file.exists()
+            if not stale and max_age_days > 0:
+                stale = (now - job_file.stat().st_mtime) > max_age_days * 86400
+            if not stale:
+                continue
+            for f in tmp.rglob("*"):
+                if f.is_file():
+                    freed += f.stat().st_size
+            removed_files += sum(1 for f in tmp.rglob("*") if f.is_file())
+            shutil.rmtree(tmp, ignore_errors=True)
+        return {"files": removed_files, "bytes": freed}
 
     def create_job(
         self,

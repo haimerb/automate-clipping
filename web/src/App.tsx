@@ -492,6 +492,18 @@ export default function App() {
     goTo("ingest");
   }
 
+  // Re-render de un job generado con IA: vuelve al seguimiento en INGRESAR
+  // en vez de dejar la pantalla de clips mostrando el video anterior.
+  function handleRegenerated() {
+    setClips([]);
+    setJobError(null);
+    if (job) {
+      setResumeJob({ ...job, status: "queued", progress: 0 });
+    }
+    goTo("ingest");
+    window.scrollTo({ top: 0 });
+  }
+
   function markCompleted(stepName: WizardStep) {
     setCompletedSteps((prev) => {
       if (prev.includes(stepName)) return prev;
@@ -687,6 +699,7 @@ export default function App() {
               onGoReview={() => { markCompleted("clips"); goTo("review"); }}
               onReset={handleReset}
               onDashboard={() => { markCompleted("clips"); markCompleted("review"); goTo("analytics"); }}
+              onRegenerated={handleRegenerated}
             />
           )}
           {step === "review" && job && (
