@@ -48,6 +48,7 @@ from .models import (
     PublishClipRequest,
     PublishResult,
     RecentPost,
+    RegenerateRequest,
     RegisterRequest,
     ThumbnailSelect,
     TokenResponse,
@@ -779,6 +780,77 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
                         body.auto_publish_platform, body.auto_publish_account,
                     )
         return job
+
+    @app.post("/api/jobs/{job_id}/regenerate")
+    async def regenerate_job(
+        job_id: str, body: RegenerateRequest, user: User = Depends(get_current_user)
+    ) -> dict:
+        """Vuelve a renderizar un job `generate` con el motor actual.
+
+        Los jobs generados antes del b-roll/música quedaban con escenas vacías y no
+        había forma de mejorarlos: `reprocess` solo rehace la metadata viral. Aquí
+        se archiva la fuente previa en `previous/` (por si el nuevo render sale
+        peor), se limpian clips y exports, y se reencola el pipeline completo.
+        """
+        job = owned_job(job_id, user.id)
+        if job.source != "generate":
+            raise HTTPException(
+                status_code=409, detail="Solo los jobs generados con IA se pueden regenerar"
+            )
+        if job.status in ("queued", "processing", "downloading", "exporting"):
+            raise HTTPException(status_code=409, detail="El job todavía se está procesando")
+
+        job_dir = store.job_dir(job.id)
+        meta_path = job_dir / "generate_meta.json"
+        if not meta_path.exists():
+            raise HTTPException(status_code=404, detail="El job no tiene metadata de generación")
+        import json
+
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        from .ai_generate import GENERATE_DURATIONS
+
+        for field in ("music", "style", "voice"):
+            value = getattr(body, field)
+            if value is not None and str(value).strip():
+                meta[field] = str(value).strip()
+        if body.duration is not None:
+            if body.duration not in GENERATE_DURATIONS:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"duración inválida; valores: {', '.join(map(str, GENERATE_DURATIONS))}",
+                )
+            meta["duration"] = body.duration
+        meta.pop("script_gen", None)  # guion nuevo: también nuevas queries de b-roll
+        meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+
+        store.archive_source(job.id)
+        store.save_clips(job.id, [])
+        store.exports_dir(job.id).mkdir(parents=True, exist_ok=True)
+        job.status = "queued"
+        job.progress = 0
+        job.warning = None
+        store.save_job(job)
+
+        if os.environ.get("EDGETAPE_ASYNC_BACKEND") == "celery":
+            enqueue_job(job.id, str(store.root))
+        else:
+            from .processing import run_job as _run
+
+            await _run(job.id, store, tsc, sel)
+        return {"job_id": job.id, "status": job.status}
+
+    @app.delete("/api/jobs/{job_id}/media")
+    def delete_job_media(job_id: str, user: User = Depends(get_current_user)) -> dict:
+        """Libera disco: borra fuente, exports y versiones previas del job.
+
+        El job sigue en el listado con sus clips, posts y metadata (se puede volver
+        a renderizar con `/regenerate`), pero ya no ocupa espacio con el video.
+        """
+        job = owned_job(job_id, user.id)
+        if job.status in ("queued", "processing", "downloading", "exporting"):
+            raise HTTPException(status_code=409, detail="El job todavía se está procesando")
+        freed = store.purge_media(job.id)
+        return {"job_id": job.id, "freed_bytes": freed}
 
     @app.post("/api/jobs/{job_id}/reprocess", response_model=list[Clip])
     async def reprocess_job_clips(
