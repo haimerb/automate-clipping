@@ -6,14 +6,16 @@ presenta como un carrete de clips listos para recortar, exportar y **monetizar**
 ## Funcionalidades
 
 - **Cuentas de usuario**: registro/login (JWT), cada usuario tiene sus jobs, clips y publicaciones en Postgres para auth.
-- **Dos fuentes de video**: subir un archivo o pegar una URL de YouTube (se descarga con yt-dlp y se procesa igual).
+- **Tres fuentes de video**: subir un archivo, pegar una URL (YouTube o cualquier http/https resoluble con yt-dlp) o **generar el video con IA**.
+- **Generador con IA** (`/api/generate`): guion (LLM o fallback), voz edge-tts/gTTS en español, **b-roll real de Pexels/Pixabay** por escena, subtítulos quemados y música de fondo seleccionable. Nunca falla en silencio: cada degradación se avisa en el job.
 - **Clips automáticos** por transcripción + detección heurística o selector LLM, con **vista previa en video** del clip exportado.
 - **Selección para publicar**: marca los clips que vas a subir y revisa la lista lista-para-publicar con su monetización.
-- **Cuentas vinculadas**: registra tus canales/perfiles de YouTube, TikTok y Facebook para asociar cada publicación.
-- **Publicación automática**: sube clips a YouTube/TikTok/Facebook en paralelo, con reintentos ante rate limits (429) y respaldo a Studio.
+- **Cuentas vinculadas con OAuth real**: YouTube, TikTok, Facebook e Instagram (botón *Conectar*; en TikTok/Meta se detectan páginas e IG business automáticamente).
+- **Publicación automática**: sube clips a YouTube/TikTok/Facebook/Instagram en paralelo, con reintentos por cuenta, cola persistente y respaldo a Studio.
 - **Edición de metadata**: edita título, descripción y tags de cada clip antes de publicar.
 - **Múltiples miniaturas**: genera 5 opciones por clip y selecciona la mejor antes de publicar.
 - **Destinos persistentes**: guarda qué plataforma/cuenta usaste para cada clip, sin depender de localStorage.
+- **Regenerar y liberar disco**: vuelve a renderizar un job generado con IA con el motor actual, o borra el video y los exports de un job que ya publicaste.
 - **Panel de monetización** por plataforma (YouTube Shorts, TikTok, Facebook Reels, Instagram Reels, otras):
   registra vistas, me gusta, comentarios y ganancias de cada publicación, con un dashboard de totales por plataforma.
 
@@ -27,6 +29,24 @@ presenta como un carrete de clips listos para recortar, exportar y **monetizar**
   - **LLM** (por defecto si hay config): envío por ventanas de ~90 s a cualquier endpoint compatible con OpenAI (funciona con GPT, Ollama, vLLM…); el modelo elige los mejores momentos con título + frase gancho.
   - **Heurístico** (fallback automático): scoring por frecuencia inversa de documento + palabras gancho + densidad de habla, umbrales adaptativos; cada clip se abre en pasajes con señal semántica y se corta en pausas > 4 s.
 - **Colab (opcional)**: notebook `colab/edgetape_whisper.ipynb` para transcripción con GPU, conecta vía API al backend.
+
+### Motor de video generado con IA
+
+Cada job `source=generate` sigue esta cascada, y **cada salto queda registrado en `job.warning`**:
+
+| Capa | Qué usa | Requiere |
+|---|---|---|
+| Guion | LLM (`EDGETAPE_LLM_*` / Groq / Ollama) → heurístico determinístico | nada |
+| Voz | edge-tts → gTTS → sin voz | internet para TTS |
+| Escenas | b-roll de Pexels/Pixabay (video > foto) | claves de stock (gratis) |
+| | material generado por IA (`videogen.py`, de pago) | `EDGETAPE_VIDEOGEN_*` |
+| | fotos de Wikimedia → fondos de marca | nada |
+| Música | `backend/assets/music/*.mp3`, la elige el usuario | pistas en el repo |
+
+- **Stock**: `materials.py` busca video antes que foto, deduplica por `uid` entre proveedores y escenas, y limita cada asset a 48 MB. El LLM escribe una query visual en inglés por escena; sin LLM se derivan palabras clave del guion.
+- **Proveedor IA** (`videogen.py`): modo `image` (`POST {base}/images/generations`, OpenAI-compatible) o `webhook` (`POST` esperando `{"video_url": ...}`). Va **después** del stock y acotado a `EDGETAPE_VIDEOGEN_MAX_SCENES` escenas (1 por defecto) para no quemar cuota.
+- **Video local por difusión**: no es una opción (una RTX 2060 de 6 GB no alcanza); por eso es un adaptador a proveedores remotos.
+- **Regenerar**: `POST /api/jobs/{id}/regenerate` vuelve a renderizar un job antiguo con el motor actual; el video anterior se archiva en `previous/` y `python -m app.cleanup` lo recoge a los pocos días.
 
 ## Estructura
 
@@ -59,8 +79,8 @@ pip install -r backend\requirements.txt
 # Transcripción real (opcional, pesado)
 pip install -r backend\requirements-ai.txt
 
-# Frontend
-cd web && npm install && cd ..
+# Frontend (pnpm, no npm)
+cd web && pnpm install && cd ..
 ```
 
 ## Ejecutar
@@ -73,17 +93,17 @@ docker compose up -d
 uvicorn app.main:app --reload --app-dir backend
 
 # Frontend dev (en http://localhost:5173, proxya /api al 8000)
-cd web && npm run dev
+cd web && pnpm dev
 ```
 
-Para servir el frontend construido desde el propio backend: `cd web && npm run build`
+Para servir el frontend construido desde el propio backend: `cd web && pnpm build`
 (uvicorn sirve `web/dist` automáticamente en `/`).
 
 ## Test
 
 ```bash
 cd backend && python -m pytest
-cd web && npm run build        # typecheck (tsc) + bundle
+cd web && pnpm build          # typecheck (tsc) + bundle
 ```
 
 `backend/tests/test_pipeline.py` genera un video sintético con ffmpeg y prueba el flujo
@@ -102,6 +122,9 @@ completo (upload → detección → export → descarga). Se omite si ffmpeg no 
 | DELETE | `/api/accounts/{id}` | Desvincula una cuenta |
 | POST | `/api/jobs` | Sube media (multipart `file`), crea job 202, procesa en background |
 | POST | `/api/jobs/youtube` | Crea job desde URL de YouTube (`{"url": "..."}`); valida el dominio |
+| POST | `/api/jobs/url` | Crea job desde cualquier URL descargable (http/https) |
+| POST | `/api/generate` | Crea un job de video generado con IA (`prompt`, `duration`, `style?`, `platform?`, `voice?`, `music?`, `auto_publish?`, `account_id?`) |
+| GET | `/api/music` | Pistas de música de fondo disponibles |
 | GET | `/api/jobs/{id}` | Estado del job (`queued/downloading/processing/done/failed` + `progress`) |
 | GET | `/api/jobs/{id}/clips` | Clips detectados |
 | PATCH | `/api/jobs/{id}/clips/{cid}` | Marca/desmarca clip para publicar (`{"publish": bool}`) |
@@ -117,6 +140,13 @@ completo (upload → detección → export → descarga). Se omite si ffmpeg no 
 | PATCH | `/api/jobs/{id}/platforms/{pid}` | Actualiza una publicación |
 | DELETE | `/api/jobs/{id}/platforms/{pid}` | Elimina una publicación |
 | POST | `/api/jobs/{id}/reprocess` | Regenera metadata viral de clips existentes |
+| POST | `/api/jobs/{id}/regenerate` | Vuelve a renderizar un job `generate` con el motor actual (overrides opcionales `music/style/voice/duration`) |
+| DELETE | `/api/jobs/{id}/media` | Borra fuente, exports y versiones previas; conserva job, clips y posts |
+| GET | `/api/accounts/{id}/tiktok/auth` | URL de OAuth de TikTok (Content Posting API) |
+| GET | `/api/tiktok/callback` | Callback de TikTok: guarda el `refresh_token` de la cuenta |
+| GET | `/api/accounts/{id}/meta/auth` | URL de Facebook Login (páginas + IG business) |
+| GET | `/api/meta/callback` | Callback de Meta: guarda el Page Access Token y detecta la página o la IG |
+| GET | `/api/public/clips/{job}/{clip}/{token}.mp4` | Clip con URL firmada (lo que descarga Meta para publicar un Reel; sin Bearer) |
 | POST | `/api/jobs/{id}/transcription` | Recibe transcripción desde Colab (requiere `EDGETAPE_COLAB_SECRET`) |
 | GET | `/api/dashboard` | Agregados del usuario: ganancias/vistas totales y por plataforma + cuentas + últimas publicaciones |
 | GET | `/api/health` | Estado, transcriber, scorer y disponibilidad de yt-dlp |
@@ -137,7 +167,7 @@ scoped por usuario; los usuarios y cuentas vinculadas viven en PostgreSQL.
 | `EDGETAPE_LLM_MODEL` | Modelo del selector LLM y metadata (default `gpt-4o-mini`) |
 | `EDGETAPE_LLM_BASE_URL` | Endpoint compatible con OpenAI (default `https://api.openai.com/v1`). Para Groq: `https://api.groq.com/openai/v1` |
 | `EDGETAPE_LLM_API_KEY` | API key; se omite `Authorization` si está vacía (útil para modelos locales) |
-| `EDGETAPE_GROQ_API_KEY` | API key de Groq (gratis) para metadata viral con `gemma2-9b-it` y transcripción con `whisper-large-v3-turbo` |
+| `EDGETAPE_GROQ_API_KEY` | API key de Groq (gratis) para metadata viral con `openai/gpt-oss-20b` y transcripción con `whisper-large-v3-turbo` |
 | `EDGETAPE_OLLAMA_URL` | URL de Ollama local (default `http://localhost:11434`); detecta modelos disponibles automáticamente |
 | `EDGETAPE_COLAB_SECRET` | Secreto para autenticar el endpoint de transcripción desde Colab |
 | `EDGETAPE_YT_COOKIES` | Ruta a un archivo de cookies (formato Netscape) para descargar videos de YouTube que requieren sesión o ante bloqueos (403) persistentes |
@@ -147,12 +177,34 @@ scoped por usuario; los usuarios y cuentas vinculadas viven en PostgreSQL.
 | `EDGETAPE_METADATA_DELAY` | Pausa deliberada entre scoring y metadata (segundos; default `5`; `0` acelera tests) |
 | `EDGETAPE_QUEUE_TASK_DELAY` | Pausa entre tareas de la cola de publicación (segundos; default `10`) |
 | `EDGETAPE_OLLAMA_PROBE` | Probe de Ollama al construir el generador de metadata (`0` lo desactiva; default `1`) |
+| `EDGETAPE_PEXELS_API_KEY` / `EDGETAPE_PIXABAY_API_KEY` | Claves gratuitas de b-roll. Con una basta; sin ellas el motor cae a Wikimedia/fondos de marca |
+| `EDGETAPE_STOCK_MATERIALS` | `0` desactiva todo el material de stock |
+| `EDGETAPE_MUSIC_DIR` | Carpeta de pistas de música (default `backend/assets/music`) |
+| `EDGETAPE_MUSIC_VOLUME` | Mezcla de la música bajo la voz (default `0.22`) |
+| `EDGETAPE_VIDEOGEN_BASE_URL` / `_API_KEY` / `_MODEL` / `_MODE` | Proveedor opcional de material generado por IA. `MODE=image` (OpenAI-compatible) o `webhook`. Sin esto no se usa |
+| `EDGETAPE_VIDEOGEN_MAX_SCENES` | Tope de escenas por job que pueden usar material IA (default `1`) |
+| `EDGETAPE_VIDEOGEN` | `0` desactiva el proveedor aunque esté configurado |
+| `EDGETAPE_PUBLIC_BASE_URL` | **Dominio público** del deploy. Necesario para Instagram: Meta debe poder descargar el clip desde la URL firmada |
+| `EDGETAPE_TIKTOK_CLIENT_KEY` / `_CLIENT_SECRET` / `_REDIRECT_URI` | Credenciales de la app de TikTok (también se pueden guardar por cuenta en CUENTAS) |
+| `EDGETAPE_TIKTOK_PRIVACY` | `SELF_ONLY` (default) o `PUBLIC_TO_EVERYONE`; TikTok solo acepta público con la app auditada |
+| `EDGETAPE_META_CLIENT_ID` / `_CLIENT_SECRET` / `_REDIRECT_URI` | Credenciales de la app de Meta (Facebook Login) |
 
 **Prioridad de transcripción**: Groq (si hay `EDGETAPE_GROQ_API_KEY`) → `faster-whisper` local → mock.
 
 **Prioridad de metadata viral**: Groq (si hay API key) → API remota → Ollama local → heurístico.
 
 **Límites de YouTube API**: cuenta nueva/verificada = 6 videos/día. Se resetea a medianoche (hora del Pacífico).
+
+**TikTok y Meta**: sin app aprobada, TikTok solo publica en privado (`SELF_ONLY`). Instagram necesita
+`EDGETAPE_PUBLIC_BASE_URL` con un dominio real y accesible desde internet; sin él, el Reel se registra
+como publicación manual. Las credenciales pueden ir por entorno **o** por cuenta en CUENTAS (ganan las
+de la cuenta).
+
+**Almacenamiento**: cada job guarda su fuente, exports y miniaturas en `backend/storage/{job_id}/`.
+`DELETE /api/jobs/{id}/media` libera el espacio de uno, y `python -m app.cleanup` barre `previous/` y
+los `ai_tmp` huérfanos de todo el storage (`--days`, `--keep`, `--job`).
+`EDGETAPE_STORAGE` debe ser una ruta **absoluta** del sistema donde corre: una ruta de otro SO
+(p. ej. `C:/...` dentro del contenedor) hace fallar ffmpeg en cada job.
 
 El selector LLM se activa si existe cualquiera de las variables `EDGETAPE_LLM_*`. Si el modelo falla o no hay config, el pipeline cae al heurístico automáticamente. El job expone qué selector se usó en `job.scorer`.
 
@@ -163,9 +215,9 @@ El selector LLM se activa si existe cualquiera de las variables `EDGETAPE_LLM_*`
 
 ## Próximos pasos / extensiones naturales
 
-- Publicación automática a TikTok/Facebook (actualmente solo YouTube tiene OAuth real).
 - Importar vistas/ganancias automáticamente desde YouTube Analytics / TikTok / Meta APIs.
+- Historial de versiones de un video generado (hoy solo se guarda la anterior en `previous/`).
 - Características acústicas (energía/risas) vía ffmpeg como señal adicional de momento fuerte.
 - Ajuste manual de in/out en el frontend antes de exportar.
 - Recorte sin recodificación (`-c copy`) cuando el usuario priorice velocidad.
-- Soporte para múltiples cuentas de YouTube por usuario (actualmente solo una por OAuth).
+- Soporte para múltiples cuentas por plataforma y usuario.

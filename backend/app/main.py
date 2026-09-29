@@ -67,6 +67,26 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_STORAGE = BACKEND_DIR / "storage"
 
 
+def _resolve_storage(storage_root: str | Path | None) -> JobStore:
+    """Construye el JobStore y falla al arrancar si la ruta de storage no sirve.
+
+    Una ruta con prefijo de otra plataforma (`C:/...` en un contenedor Linux)
+    `mkdir()` bien y solo revienta más tarde, dentro de ffmpeg, con un
+    "Protocol not found" que el pipeline reportaba como video de prueba. Es
+    mucho más barato detectinglo al levantar la API.
+    """
+    configured = storage_root or os.environ.get("EDGETAPE_STORAGE") or DEFAULT_STORAGE
+    root = Path(configured).expanduser()
+    if not root.is_absolute():
+        raise RuntimeError(
+            f"EDGETAPE_STORAGE debe ser una ruta absoluta del sistema actual, no "
+            f"{str(configured)!r}. Si es un contenedor Linux y el valor parece Windows "
+            "(C:/...), o al revés, ffmpeg fallará en cada job con 'Protocol not found' "
+            "y el pipeline caerá a un video de prueba."
+        )
+    return JobStore(root)
+
+
 class YoutubeRequest(BaseModel):
     url: str
 
@@ -129,7 +149,7 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
     import logging
     logging.basicConfig(level=logging.INFO, format="%(name)s: %(message)s")
 
-    store = JobStore(storage_root or os.environ.get("EDGETAPE_STORAGE") or DEFAULT_STORAGE)
+    store = _resolve_storage(storage_root)
     tsc = transcriber or build_transcriber()
     sel = selector or build_clip_selector()
     init_db()

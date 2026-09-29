@@ -60,7 +60,10 @@ _CTA_OPTIONS = [
 ]
 
 GROQ_API_KEY = os.environ.get("EDGETAPE_GROQ_API_KEY")
-GROQ_MODEL = os.environ.get("EDGETAPE_GROQ_MODEL", "gemma2-9b-it")
+# Groq retira modelos con frecuencia (gemma2-9b-it fue decomisionado en 2026):
+# el default debe ser uno vigente y la cadena de respaldo cubre el 400.
+GROQ_MODEL = os.environ.get("EDGETAPE_GROQ_MODEL", "openai/gpt-oss-20b")
+GROQ_FALLBACK_MODELS = ("qwen/qwen3.8-27b", "openai/gpt-oss-120b")
 OLLAMA_URL = os.environ.get("EDGETAPE_OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.environ.get("EDGETAPE_OLLAMA_MODEL", "qwen2.5-coder:7b")
 
@@ -138,27 +141,40 @@ class GroqMetadataGenerator:
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}",
         }
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": VIRAL_SYSTEM},
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": 0.7,
-        }
+        messages = [
+            {"role": "system", "content": VIRAL_SYSTEM},
+            {"role": "user", "content": prompt},
+        ]
         client = self._client or httpx.Client(timeout=60.0)
+        last_error: Exception | None = None
         try:
-            for attempt in range(5):
-                resp = client.post(url, json=payload, headers=headers)
-                if resp.status_code == 429:
-                    wait = (3 * (2 ** attempt)) + random.random() * 2
-                    logger.warning("Groq 429 — retry %d in %.1fs", attempt + 1, wait)
-                    time.sleep(wait)
-                    continue
-                resp.raise_for_status()
-                return resp.json()["choices"][0]["message"]["content"]
-            resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
+            for model in (self.model, *GROQ_FALLBACK_MODELS):
+                if model != self.model:
+                    logger.warning("Groq %s no disponible; probando %s", self.model, model)
+                payload = {"model": model, "messages": messages, "temperature": 0.7}
+                for attempt in range(5):
+                    resp = client.post(url, json=payload, headers=headers)
+                    if resp.status_code == 429:
+                        wait = (3 * (2**attempt)) + random.random() * 2
+                        logger.warning("Groq 429 — retry %d in %.1fs", attempt + 1, wait)
+                        time.sleep(wait)
+                        continue
+                    if resp.status_code == 400:
+                        # modelo dado de baja o prompt rechazado: no insistir con él
+                        logger.warning("Groq 400 con %s: %s", model, resp.text[:200])
+                        last_error = httpx.HTTPStatusError(
+                            f"Groq 400 con {model}", request=resp.request, response=resp
+                        )
+                        break
+                    resp.raise_for_status()
+                    return resp.json()["choices"][0]["message"]["content"]
+                else:
+                    last_error = httpx.HTTPStatusError(
+                        f"Groq 429 persistente con {model}", request=resp.request, response=resp
+                    )
+            if last_error is not None:
+                raise last_error
+            raise RuntimeError("Groq sin candidatos")
         finally:
             if self._client is None:
                 client.close()

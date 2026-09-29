@@ -70,6 +70,9 @@ def job_template(tmp_path_factory, auth_headers, sample_video) -> Path:
             job = store.get_job(job_id)
             if job and job.status == "done" and store.get_clips(job_id):
                 return storage
+            # El intento falló (el mock no siempre encuentra un clip): su job se
+            # queda en el template y los tests que lo copian asertan 1 job.
+            shutil.rmtree(store.job_dir(job_id), ignore_errors=True)
             time.sleep(0.1)
     finally:
         _main_mod.enqueue_job = _orig_enqueue
@@ -86,7 +89,8 @@ def _done_job(tmp_path: Path, job_template: Path) -> tuple[TestClient, JobStore,
     store = JobStore(storage)
     jobs = store.list_jobs()
     assert len(jobs) == 1, f"el template tiene {len(jobs)} jobs"
-    return client, store, jobs[0].id
+    job_id = jobs[0].id
+    return client, store, job_id
 
 
 def test_publish_fallback_creates_ready_post(tmp_path, auth_headers, sample_video, job_template, monkeypatch) -> None:
