@@ -2,7 +2,27 @@ flowchart LR
     subgraph IN["INGRESAR"]
         A1["UP (archivo)"] --> J["Job queued"]
         A2["URL (YouTube/TikTok/etc)"] --> Y["yt-dlp is_downloadable_url"] --> J
-        A3["Generar con IA"] --> J
+        A3["Generar con IA"] --> G["ai_generate.generate_ai_video"]
+        G --> J
+    end
+
+    subgraph GEN["MOTOR DE VIDEO GENERADO (ai_generate)"]
+        G --> GS{"guion"}
+        GS -->|"LLM (EDGETAPE_LLM_*)"| GL["guion por escenas"]
+        GS -->|"sin LLM"| GH["guion determinístico"]
+        GL --> VOZ["voz: edge-tts → gTTS → sin voz"]
+        GH --> VOZ
+        VOZ --> MAT{"material por escena"}
+        MAT -->|"stock"| STK["Pexels/Pixabay: video → foto<br/>dedupe por uid, ≤48 MB"]
+        MAT -->|"videogen (de pago)"| VG["images/generations o webhook<br/>≤ EDGETAPE_VIDEOGEN_MAX_SCENES"]
+        MAT -->|"wikimedia"| WM["fotos de Wikimedia"]
+        MAT -->|"último recurso"| BG["fondos de marca"]
+        STK --> ESC["ffmpeg por escenas:<br/>zoompan/subtítulos/fades + concat"]
+        VG --> ESC
+        WM --> ESC
+        BG --> ESC
+        ESC --> MIX["mezcla de música (EDGETAPE_MUSIC_VOLUME)"]
+        MIX --> WARN["warnings: cada degradación → job.warning"]
     end
 
     J -->|EDGETAPE_ASYNC_BACKEND=celery| CEL["Celery + Redis broker"]
@@ -51,6 +71,12 @@ flowchart LR
     P1 --> LIM2{"¿cuenta con OAuth válida?"}
     LIM2 -->|"refresh token 1// + creds"| YT["youtube_publish v3 resumable<br/>+ miniatura custom"]
     LIM2 -->|"API key o sin creds"| ST["respaldo Studio: post 'listo' + enlace"]
+    LIM2 -->|"token TikTok (365d)"| TT["tiktok_publish: init → PUT upload → commit<br/>caption en post_info.title"]
+    LIM2 -->|"Page Access Token Meta"| FB["facebook_publish: init → Graph upload"]
+    LIM2 -->|"IG business + EDGETAPE_PUBLIC_BASE_URL"| IG["instagram_publish:<br/>URL firmada /api/public/clips/... (Meta no manda Bearer)"]
     YT --> POST["posts.json<br/>status público/listo"]
     ST --> POST
+    TT --> POST
+    FB --> POST
+    IG --> POST
     POST --> DASH["/api/dashboard agrega por usuario<br/>views, likes, earnings, cuentas"]

@@ -488,5 +488,10 @@ def test_run_job_generate_records_warning(
     assert job is not None and job.status == "done"
     assert job.warning and "material" in job.warning
     # los temporales de render se limpian: el export vive en exports/
-    assert not (store.job_dir(job_id) / "ai_tmp").exists()
-    assert list((store.job_dir(job_id) / "exports").glob("*.mp4"))
+    job_dir = store.job_dir(job_id)
+    assert not (job_dir / "ai_tmp").exists()
+    assert list((job_dir / "exports").glob("*.mp4"))
+    # ni los intermedios de composición se quedan en la raíz del job: miden
+    # como el video final y antes ocupaban el doble de disco por job
+    assert not list(job_dir.glob("_comp*.mp4"))
+    assert not list(job_dir.glob("_concat.txt"))

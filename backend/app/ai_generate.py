@@ -853,7 +853,7 @@ def _compose_scenes(
     con rc -9 y stderr vacío). Aquí cada escena es un mp4 corto propio (memoria
     acotada) y el resultado se concatena por demuxer.
     """
-    tmp = Path(out).parent
+    tmp = segs[0].parent if segs else Path(out).parent
     comps: list[Path] = []
     for i, seg in enumerate(segs):
         st = starts[i]
@@ -903,6 +903,10 @@ def _compose_scenes(
     ])
     if not Path(out).exists():
         raise RuntimeError("ffmpeg ai render no produjo archivo")
+    # Los `_comp*.mp4` y la lista de concat son del tamaño del video final: si
+    # caen fuera de `ai_tmp` nunca se limpian y cada job ocupa el doble.
+    for leftover in [*comps, lst]:
+        leftover.unlink(missing_ok=True)
     return Path(out)
 
 

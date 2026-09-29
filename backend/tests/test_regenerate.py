@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 from pathlib import Path
 
 import pytest
@@ -283,6 +285,29 @@ def test_cleanup_cli_sweeps(tmp_path: Path, monkeypatch, capsys):
     assert not (orphan / "ai_tmp").exists()
 
 
+def test_sweep_media_previous_respeta_keep_y_edad(tmp_path: Path):
+    store = JobStore(tmp_path / "storage")
+    archive = store.archive_dir("j1")
+    archive.mkdir(parents=True, exist_ok=True)
+    antiguo = archive / "source_1.mp4"
+    antiguo.write_bytes(b"0" * 1024)
+    reciente = archive / "source_2.mp4"
+    reciente.write_bytes(b"0" * 1024)
+    hace_diez_dias = time.time() - 10 * 86400
+    os.utime(antiguo, (hace_diez_dias, hace_diez_dias))
+
+    # keep=1 + days=7 → sobrevive el más nuevo, se va el antiguo
+    res = store.sweep_media(max_age_days=7.0, keep=1)
+    assert res["files"] == 1
+    assert reciente.exists() and not antiguo.exists()
+
+    # days=0 → borra lo que exceda keep sin mirar la edad (antes fallaba si
+    # el mtime quedaba por encima de `now` por precisión del sistema de archivos)
+    res = store.sweep_media(max_age_days=0.0, keep=0)
+    assert res["files"] == 1
+    assert not reciente.exists()
+
+
 def test_cleanup_cli_purges_one_job(tmp_path: Path, monkeypatch, capsys):
     from app import cleanup
 
@@ -312,3 +337,39 @@ def _args(storage: str, job: str | None = None):
 
     ns = argparse.Namespace(storage=storage, days=0.0, keep=0, job=job)
     return ns
+
+
+# ── Storage misconfigurado ────────────────────────────────────
+
+
+def test_relative_storage_fails_fast(monkeypatch):
+    """Una ruta relativa (o de otro SO) debe reventar al arrancar, no en cada job."""
+    from app.main import _resolve_storage
+
+    monkeypatch.delenv("EDGETAPE_STORAGE", raising=False)
+    with pytest.raises(RuntimeError, match="ruta absoluta"):
+        _resolve_storage("storage/relativo")
+
+
+def test_windows_path_in_linux_fails_fast(monkeypatch):
+    from app.main import _resolve_storage
+
+    monkeypatch.setenv("EDGETAPE_STORAGE", "C:/Users/algo/storage")
+    try:
+        import os
+
+        relative_on_this_os = not os.path.isabs("C:/Users/algo/storage")
+    except Exception:  # pragma: no cover
+        relative_on_this_os = True
+    if not relative_on_this_os:
+        pytest.skip("en Windows esa ruta sí es válida")
+    with pytest.raises(RuntimeError, match="ruta absoluta"):
+        _resolve_storage(None)
+
+
+def test_absolute_storage_is_accepted(tmp_path: Path):
+    from app.main import _resolve_storage
+
+    store = _resolve_storage(tmp_path / "storage")
+    assert store.root.is_absolute()
+    assert store.root.exists()

@@ -118,7 +118,10 @@ class JobStore:
                     reverse=True,
                 )
                 for old in versions[keep:]:
-                    if now - old.stat().st_mtime < max_age_days * 86400:
+                    # `days=0` significa "sin comprobar edad": borrar siempre lo
+                    # que exceda `keep`. Sin el guard, un mtime ligeramente por
+                    # encima de `now` (precisión de NTFS) dejaba el archivo vivo.
+                    if max_age_days > 0 and now - old.stat().st_mtime < max_age_days * 86400:
                         continue
                     freed += old.stat().st_size
                     old.unlink(missing_ok=True)

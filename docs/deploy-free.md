@@ -44,7 +44,18 @@ Antes de desplegar, ten claro lo siguiente (aplica igual en local o en el hostin
    EDGETAPE_YT_CLIENT_ID=
    EDGETAPE_YT_CLIENT_SECRET=
    EDGETAPE_YT_REDIRECT_URI=https://TU-USUARIO-APP.hf.space/api/youtube/callback
+   EDGETAPE_TIKTOK_CLIENT_KEY=
+   EDGETAPE_TIKTOK_CLIENT_SECRET=
+   EDGETAPE_TIKTOK_REDIRECT_URI=https://TU-USUARIO-APP.hf.space/api/tiktok/callback
+   EDGETAPE_META_CLIENT_ID=
+   EDGETAPE_META_CLIENT_SECRET=
+   EDGETAPE_META_REDIRECT_URI=https://TU-USUARIO-APP.hf.space/api/meta/callback
+   EDGETAPE_PUBLIC_BASE_URL=https://TU-USUARIO-APP.hf.space   # Instagram lo necesita
+   EDGETAPE_PEXELS_API_KEY=                                  # b-roll del generador con IA
+   EDGETAPE_GROQ_API_KEY=                                    # guion + transcripción
    ```
+   Los `redirect_uri` deben coincidir **exactamente** con los registrados en cada
+   app (Google, TikTok, Meta) y apuntar al dominio real del deploy, no a localhost.
 
 ## Opción 1 — Hugging Face Spaces (Docker, sin tarjeta)
 
