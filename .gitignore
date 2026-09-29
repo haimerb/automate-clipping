@@ -10,6 +10,12 @@ web/dist/
 *.wav
 *.mp3
 
+# ...pero las pistas de música de fondo del generador sí se versionan
+!backend/assets/music/*.mp3
+!backend/assets/music/*.m4a
+!backend/assets/music/*.wav
+!backend/assets/music/*.ogg
+
 # secretos y local
 .env
 AGENTS.md

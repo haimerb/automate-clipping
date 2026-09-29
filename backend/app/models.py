@@ -12,6 +12,7 @@ class Job(BaseModel):
     status: str = "queued"
     progress: int = 0
     error: str | None = None
+    warning: str | None = None
     duration: float | None = None
     transcriber: str | None = None
     scorer: str | None = None
@@ -184,6 +185,7 @@ class GenerateRequest(BaseModel):
     style: str = "professional"
     platform: str = "youtube_shorts"
     voice: str = "es_mx_female"
+    music: str = "none"
     auto_publish: bool = False
     account_id: str | None = None
 

@@ -37,6 +37,7 @@ import {
   getAccounts,
   generateVideo,
   getJob,
+  getMusicTracks,
 } from "../api";
 import type { Job, LinkedAccount } from "../api";
 import { EDGE, MARK, MONO, ON_ACCENT } from "../theme";
@@ -120,6 +121,8 @@ export default function Upload({ onReady, onOpenJob }: Props) {
   const [genDuration, setGenDuration] = useState(30);
   const [style, setStyle] = useState("professional");
   const [voice, setVoice] = useState("es_mx_female");
+  const [music, setMusic] = useState("none");
+  const [musicTracks, setMusicTracks] = useState<string[]>([]);
   const [autoPublish, setAutoPublish] = useState(false);
   const [accountId, setAccountId] = useState("");
   const [accounts, setAccounts] = useState<LinkedAccount[]>([]);
@@ -131,6 +134,9 @@ export default function Upload({ onReady, onOpenJob }: Props) {
     getAccounts()
       .then(setAccounts)
       .catch(() => setAccounts([]));
+    getMusicTracks()
+      .then((r) => setMusicTracks(r.tracks))
+      .catch(() => setMusicTracks([]));
   }, []);
 
   async function process(promise: Promise<Job>, doneLabel: string) {
@@ -195,6 +201,7 @@ export default function Upload({ onReady, onOpenJob }: Props) {
         style,
         platform: genPlatform,
         voice,
+        music,
         auto_publish: autoPublish,
         account_id: autoPublish && accountId ? accountId : undefined,
       });
@@ -365,6 +372,28 @@ export default function Upload({ onReady, onOpenJob }: Props) {
                     ))}
                   </Select>
                 </FormControl>
+                <FormControl size="small" fullWidth>
+                  <InputLabel>Música</InputLabel>
+                  <Select
+                    value={music}
+                    label="Música"
+                    onChange={(e) => setMusic(e.target.value)}
+                    disabled={busy}
+                  >
+                    <MenuItem value="none">Sin música</MenuItem>
+                    {musicTracks.length > 0 && <MenuItem value="auto">Aleatoria</MenuItem>}
+                    {musicTracks.map((t) => (
+                      <MenuItem key={t} value={t}>
+                        {t.replace(/\.[^.]+$/, "")}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                  <FormHelperText>
+                    {musicTracks.length === 0
+                      ? "No hay pistas cargadas en el servidor (backend/assets/music)"
+                      : "Se mezcla por debajo de la voz"}
+                  </FormHelperText>
+                </FormControl>
               </Stack>
 
               <FormControlLabel
@@ -518,6 +547,11 @@ export default function Upload({ onReady, onOpenJob }: Props) {
         {error && (
           <Alert severity="error" sx={{ mt: 3 }}>
             {error}
+          </Alert>
+        )}
+        {job?.warning && (
+          <Alert severity="warning" sx={{ mt: 3 }}>
+            {job.warning}
           </Alert>
         )}
       </Box>

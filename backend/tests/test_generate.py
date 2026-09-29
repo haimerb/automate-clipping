@@ -332,3 +332,161 @@ def test_ai_generate_scene_images_offline(tmp_path: Path) -> None:
     assert sizes == [None]
     # escenas título/cierre nunca buscan imagen
     assert aig._fetch_scene_images(["a.", "b.", "c."], (1080, 1920), tmp_path) == [None, None, None]
+
+
+def test_ai_generate_scene_media_offline(tmp_path: Path) -> None:
+    """Sin red (EDGETAPE_AI_IMAGES=0) el b-roll queda vacío pero la estructura se mantiene."""
+    assets = aig._fetch_scene_media(
+        ["a.", "b.", "c."], ["one", "two", "three"], (1080, 1920), tmp_path
+    )
+    assert assets == [(None, False)] * 3
+
+
+def test_material_library_never_repeats(tmp_path: Path) -> None:
+    """take() marca el material como usado: dos escenas nunca reciben el mismo b-roll."""
+    from app import materials
+
+    lib = materials.MaterialLibrary(pexels_keys=["k"], pixabay_keys=[])
+    pool = [
+        materials.Material(
+            uid=f"u{i}", provider="pexels", kind="video", url=f"http://x/{i}.mp4",
+            width=1920, height=1080, duration=10.0, landscape=True,
+        )
+        for i in range(3)
+    ]
+    picked = [lib.take(pool) for _ in range(4)]
+    assert [m.uid for m in picked if m] == ["u0", "u1", "u2"]
+    assert picked[-1] is None
+
+
+def test_material_search_prioritizes_video(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """El b-roll manda: las fotos solo se piden si no hay video."""
+    from app import materials
+
+    lib = materials.MaterialLibrary(pexels_keys=["k"], pixabay_keys=[])
+    calls: list[str] = []
+
+    def _fake(_client, _query, kind, *args, **kwargs):
+        calls.append(kind)
+        return [
+            materials.Material(
+                uid=f"pexels-{kind}", provider="pexels", kind=kind,
+                url="http://x/1", width=10, height=10, duration=1.0, landscape=True,
+            )
+        ]
+
+    monkeypatch.setattr(lib, "_pexels", _fake)
+    lib.search("city", True)
+    assert calls == ["video"]
+
+
+def test_ai_generate_music_optional(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """La música es opt-in: 'none' no toca audio, un nombre válido sí se mezcla."""
+    monkeypatch.setenv("EDGETAPE_MUSIC_DIR", str(tmp_path / "music"))
+    assert aig._resolve_music("none") is None
+    assert aig._resolve_music(None) is None
+    assert aig.list_music_tracks() == []
+
+    folder = tmp_path / "music"
+    folder.mkdir()
+    (folder / "lofi.mp3").write_bytes(b"fake")
+    (folder / "notes.txt").write_text("no es audio", encoding="utf-8")
+    assert aig.list_music_tracks() == ["lofi.mp3"]
+    assert aig._resolve_music("lofi") == folder / "lofi.mp3"
+    assert aig._resolve_music("lofi.mp3") == folder / "lofi.mp3"
+    assert aig._resolve_music("auto") in (folder / "lofi.mp3",)
+    # pista inexistente → cae a la primera disponible (no rompe el render)
+    assert aig._resolve_music("no-existe.mp3") == folder / "lofi.mp3"
+
+
+def test_render_segment_video_loops_broll(tmp_path: Path) -> None:
+    """Un b-roll más corto que la escena se loopea y se escala al formato destino."""
+    src = tmp_path / "broll.mp4"
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i", "testsrc=size=640x360:rate=30:duration=1",
+            "-c:v", "libx264", "-preset", "ultrafast", str(src),
+        ],
+        check=True,
+    )
+    out = tmp_path / "seg.mp4"
+    aig._render_segment_video(src, 4.0, 0, (1080, 1920), out)
+    assert out.exists()
+    assert _video_size(out) == (1080, 1920)
+    assert 3.5 <= probe_duration(out) <= 4.5
+
+
+def test_render_video_uses_broll_and_stills(tmp_path: Path) -> None:
+    """render_video acepta mezcla de assets de video e imágenes (Ken Burns)."""
+    src = tmp_path / "broll.mp4"
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i", "testsrc=size=1280x720:rate=30:duration=2",
+            "-c:v", "libx264", "-preset", "ultrafast", str(src),
+        ],
+        check=True,
+    )
+    still = tmp_path / "still.png"
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i", "color=c=navy:size=1280x720:duration=1",
+            "-frames:v", "1", str(still),
+        ],
+        check=True,
+    )
+    out = tmp_path / "out.mp4"
+    aig.render_video(
+        [src, still], [True, False], [None, None], None,
+        [0.0, 2.5], [2.5, 5.0], (1280, 720), 5.0, out, workdir=tmp_path / "wd",
+    )
+    assert out.exists()
+    assert _video_size(out) == (1280, 720)
+    assert 4.5 <= probe_duration(out) <= 5.5
+
+
+def test_generate_endpoint_accepts_music(
+    tmp_path: Path, auth_headers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _client(tmp_path)
+
+    async def _noop(*args, **kwargs) -> None:
+        return None
+
+    monkeypatch.setattr("app.processing.run_job", _noop)
+    resp = client.post(
+        "/api/generate",
+        headers=auth_headers,
+        json={"prompt": PROMPT, "duration": 15, "music": "auto"},
+    )
+    assert resp.status_code == 202
+    store = JobStore(tmp_path / "storage")
+    job = store.get_job(resp.json()["job_id"])
+    meta = json.loads(
+        (store.job_dir(job.id) / "generate_meta.json").read_text(encoding="utf-8")
+    )
+    assert meta["music"] == "auto"
+
+
+def test_music_endpoint_lists_tracks(
+    tmp_path: Path, auth_headers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("EDGETAPE_MUSIC_DIR", str(tmp_path / "music"))
+    client = _client(tmp_path)
+    assert client.get("/api/music").status_code == 401
+    assert client.get("/api/music", headers=auth_headers).json() == {"tracks": []}
+
+
+def test_run_job_generate_records_warning(
+    tmp_path: Path, user_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sin material de red el job termina 'done' pero avisa que usó fondos de marca."""
+    store, job_id, _ = _run_generate_job(tmp_path, user_id, monkeypatch)
+    job = store.get_job(job_id)
+    assert job is not None and job.status == "done"
+    assert job.warning and "material" in job.warning
+    # los temporales de render se limpian: el export vive en exports/
+    assert not (store.job_dir(job_id) / "ai_tmp").exists()
+    assert list((store.job_dir(job_id) / "exports").glob("*.mp4"))

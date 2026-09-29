@@ -1,18 +1,19 @@
 from __future__ import annotations
 
-"""Generación procedimental de video con IA como origen: el LLM escribe el guion,
-el TTS (edge-tts → gTTS) lo narra y ffmpeg monta un video profesional por escenas:
-tarjeta de título animada, imagen real por oración (Wikimedia Commons, gratis y sin
-clave) con efecto Ken Burns/paneo y fades, subtítulos lower-third con chip de
-keywords — vertical (Shorts/Reels/TikTok) u horizontal (YouTube
-video largo).
+"""Generación procedimental de video con IA como origen: el LLM escribe el guion
+y las keywords visuales de cada escena, el TTS (edge-tts → gTTS) lo narra y
+ffmpeg monta un video profesional por escenas: tarjeta de título animada, un clip
+de b-roll real con movimiento (Pexels/Pixabay) o una imagen con efecto Ken
+Burns/paneo, fades, subtítulos lower-third con chip de keywords y música de fondo
+opcional — vertical (Shorts/Reels/TikTok) u horizontal (YouTube video largo).
 
-Degradación total:
-- sin LLM → el prompt es el guion;
-- sin TTS → el video sale sin voz;
-- sin red/imágenes → las escenas usan fondos de gradiente animados con la marca;
+Degradación en cascada (nunca queda mudo):
+- sin LLM → el prompt es el guion (keywords derivadas del texto);
+- sin TTS → el video sale sin voz (con música si se pidió);
+- sin b-roll → fotos de stock → fotos de Wikimedia → fondos de marca variados;
 - si el render por escenas falla → el render legacy de un solo fondo;
-- si eso falla también → el pipeline cae al mock de ffmpeg.
+- cada degradación se registra en `warnings` y viaja al job (no falla en silencio);
+- si todo falla → el pipeline cae al mock de ffmpeg.
 """
 
 import asyncio
@@ -28,6 +29,7 @@ from pathlib import Path
 
 import httpx
 
+from . import materials
 from .media import FFMPEG, FFPROBE, _emoji_strip, _find_font, probe_duration
 from .scorer import _content_words
 
@@ -73,6 +75,9 @@ _SCRIPT_SYSTEM = (
     "Divide el guion en oraciones separadas por punto; cada oración será una "
     "escena del video, así que frases breves, autónomas y fáciles de acompañar "
     "con una imagen. "
+    "Para cada oración produce además una 'query' visual en INGLÉS de 2 a 4 "
+    "palabras (sustantivos concretos y filmables, sin nombres propios ni marcas, "
+    "sin texto) para buscar b-roll de stock que ilustre esa escena. "
     "Respondes SOLO con JSON válido, sin texto adicional."
 )
 
@@ -157,10 +162,13 @@ _SCRIPT_PROMPT = (
     "oraciones cortas para locución (una oración = una escena).\n"
     "2. Arranca con un gancho que enganche en los primeros 2 segundos.\n"
     "3. Termina con un cierre o call-to-action breve.\n"
-    "4. Sin emojis, sin rótulos, solo el texto que se va a narrar.\n\n"
+    "4. Sin emojis, sin rótulos, solo el texto que se va a narrar.\n"
+    "5. Devuelve 'queries': una keyword visual EN INGLÉS (2-4 palabras, "
+    "concreta y filmable) por cada oración, en el MISMO orden.\n\n"
     "Responde SOLO con JSON:\n"
     '{{"title": "<título efectivo y concreto>", "hook": "<gancho máx 60 caracteres>", '
-    '"script": "<oración. Oración. Oración.>", "tags": ["tag1", "tag2"]}}'
+    '"script": "<oración. Oración. Oración.>", "tags": ["tag1", "tag2"], '
+    '"queries": ["city skyline", "happy family", "..."]}}'
 )
 
 
@@ -175,11 +183,17 @@ def _parse_script_json(content: str) -> dict:
     script = str(data.get("script", "")).strip()
     if len(script) < 10:
         raise ValueError("LLM returned an empty script")
+    queries = [
+        " ".join(str(q).split())[:60]
+        for q in (data.get("queries") or [])
+        if str(q).strip()
+    ]
     return {
         "title": str(data.get("title", ""))[:100],
         "hook": str(data.get("hook", ""))[:70],
         "script": script,
         "tags": [str(t).lower().strip() for t in (data.get("tags") or [])][:15],
+        "queries": queries,
     }
 
 
@@ -232,12 +246,14 @@ def _fallback_script(prompt: str, duration: float) -> dict:
     )
     script = " ".join(sentences)
     title = _topic_phrase(prompt)
+    queries = [_scene_query(s) or topic[:40] for s in sentences]
     return {
         "title": title[:100],
         "hook": sentences[0][:70],
         "script": script,
         "sentences": _script_sentences(script),
         "tags": ["video", "generado", "contenido", "ia"],
+        "queries": queries,
     }
 
 
@@ -283,6 +299,7 @@ def write_script(prompt: str, duration: float, style: str, platform: str) -> dic
         "script": pb["script"],
         "sentences": pb["sentences"],
         "tags": ["video", "generado", "contenido", "ia"],
+        "queries": pb.get("queries", []),
     }
 
 
@@ -596,9 +613,9 @@ def _pick_image_info(pages: dict, want_landscape: bool) -> str | None:
     return None
 
 
-def _fetch_scene_images(
+def _fetch_wikimedia_images(
     sentences: list[str], size: tuple[int, int], tmp: Path,
-    max_total: float = 45.0, per_request: float = 10.0,
+    max_total: float = 45.0, per_request: float = 10.0, client: httpx.Client | None = None,
 ) -> list[Path | None]:
     """Intenta una imagen real por oración; sin red/resultados → [None]*n (nunca rompe)."""
     n = len(sentences)
@@ -606,8 +623,10 @@ def _fetch_scene_images(
         return [None] * n
     want_landscape = size[0] >= size[1]
     paths: list[Path | None] = [None] * n
+    own = client is None
     try:
-        with httpx.Client(timeout=per_request, headers={"User-Agent": _UA}) as client:
+        c = client or httpx.Client(timeout=per_request, headers={"User-Agent": _UA})
+        try:
             deadline = time.monotonic() + max_total
             for i, text in enumerate(sentences):
                 if i == 0 or (i == n - 1 and n > 1):
@@ -632,7 +651,7 @@ def _fetch_scene_images(
                         "format": "json",
                         "origin": "*",
                     }
-                    resp = client.get(_WIKIMEDIA_API, params=params)
+                    resp = c.get(_WIKIMEDIA_API, params=params)
                     resp.raise_for_status()
                     pages = resp.json().get("query", {}).get("pages", {})
                     url = _pick_image_info(pages, want_landscape)
@@ -640,7 +659,7 @@ def _fetch_scene_images(
                         break
                 if not url:
                     continue
-                image = client.get(url)
+                image = c.get(url)
                 if image.status_code != 200:
                     continue
                 p = tmp / f"scene_{i}.img"
@@ -650,10 +669,73 @@ def _fetch_scene_images(
                     continue
                 paths[i] = p
                 logger.info("escena %d: imagen de Wikimedia · %s", i, query)
+        finally:
+            if own:
+                c.close()
     except Exception as exc:  # noqa: BLE001 — offline / timeouts / 429
         logger.warning("imágenes por escena fuera de servicio (%s); gradientes de marca", exc)
         return [None] * n
     return paths
+
+
+def _fetch_scene_images(
+    sentences: list[str], size: tuple[int, int], tmp: Path,
+    max_total: float = 45.0, per_request: float = 10.0,
+) -> list[Path | None]:
+    """Compatibilidad: imágenes Wikimedia por oración (sin b-roll de stock)."""
+    return _fetch_wikimedia_images(sentences, size, tmp, max_total, per_request)
+
+
+def _fetch_scene_media(
+    sentences: list[str], queries: list[str] | None, size: tuple[int, int], tmp: Path,
+    max_total: float = 90.0, per_request: float = 12.0,
+) -> list[tuple[Path | None, bool]]:
+    """Material por escena: b-roll real de stock (video > foto) y respaldo Wikimedia.
+
+    Devuelve (ruta, es_video) por oración; la ruta va SIN extensión (se re-probea).
+    Nunca lanza: sin red/claves deja escenas en None para usar fondos de marca.
+    """
+    n = len(sentences)
+    if os.environ.get("EDGETAPE_AI_IMAGES", "1") == "0" or n <= 1:
+        return [(None, False)] * n
+    want_landscape = size[0] >= size[1]
+    assets: list[tuple[Path | None, bool]] = [(None, False)] * n
+    library = materials.build_library()
+
+    with httpx.Client(timeout=per_request, headers={"User-Agent": _UA}) as client:
+        deadline = time.monotonic() + max_total
+        if library is not None:
+            for i in range(1, n - 1 if n > 1 else n):
+                if time.monotonic() > deadline:
+                    logger.warning("tiempo de búsqueda de b-roll agotado en la escena %d", i)
+                    break
+                q = (
+                    (queries[i] if queries and i < len(queries) else "")
+                    or _scene_query(sentences[i])
+                )
+                if not q:
+                    continue
+                pick = library.take(library.search(q, want_landscape, client=client))
+                if pick is None:
+                    continue
+                dest = tmp / f"scene_{i}.asset"
+                if materials.download(client, pick, dest):
+                    assets[i] = (dest, pick.kind == "video")
+                    logger.info("escena %d: %s %s · %s", i, pick.provider, pick.kind, q)
+
+        pending = [
+            i for i in range(n)
+            if assets[i][0] is None and i != 0 and not (i == n - 1 and n > 1)
+        ]
+        if pending:
+            images = _fetch_wikimedia_images(
+                sentences, size, tmp,
+                max_total=max(5.0, deadline - time.monotonic()), client=client,
+            )
+            for i in pending:
+                if images[i] is not None:
+                    assets[i] = (images[i], False)
+    return assets
 
 
 # ── Montaje (ffmpeg) ────────────────────────────────────────
@@ -688,6 +770,35 @@ def _render_segment(still: Path, dur: float, variant: int, size: tuple[int, int]
         FFMPEG, "-y", "-hide_banner", "-loglevel", "error",
         "-loop", "1", "-framerate", "30", "-t", f"{dur:.3f}", "-i", str(still),
         "-vf", filters, "-r", "30",
+        "-c:v", "libx264", "-preset", "veryfast",
+        "-f", "mp4", str(out),
+    ])
+
+
+def _render_segment_video(
+    clip: Path, dur: float, variant: int, size: tuple[int, int], out: Path
+) -> None:
+    """Escena con b-roll real: escala/recorta al formato, loopea y funde.
+
+    Se silencia el audio del clip y se limita la duración a la escena; el
+    `-stream_loop -1` garantiza movimiento aunque el clip sea más corto.
+    """
+    w, h = size
+    filters = [
+        f"scale={w}:{h}:force_original_aspect_ratio=increase",
+        f"crop={w}:{h}",
+        "setsar=1",
+    ]
+    if variant % 2 == 1:
+        filters.append("hflip")  # variedad sutil entre escenas consecutivas
+    if dur > 1.6:
+        filters.append(f"fade=t=in:st=0:d=0.5")
+        filters.append(f"fade=t=out:st={max(0.0, dur - 0.5):.2f}:d=0.5")
+    filters.append("format=yuv420p")
+    _run_ffmpeg([
+        FFMPEG, "-y", "-hide_banner", "-loglevel", "error",
+        "-stream_loop", "-1", "-i", str(clip),
+        "-an", "-vf", ",".join(filters), "-r", "30", "-t", f"{dur:.3f}",
         "-c:v", "libx264", "-preset", "veryfast",
         "-f", "mp4", str(out),
     ])
@@ -759,19 +870,22 @@ def _compose_scenes(
 
 
 def render_video(
-    stills: list[Path], captions: list[Path | None], audio: str | None,
+    assets: list[Path], video_flags: list[bool], captions: list[Path | None], audio: str | None,
     starts: list[float], ends: list[float], size: tuple[int, int],
     total: float, out: str | Path, workdir: str | Path | None = None,
 ) -> Path:
-    """Ensambla el video: Ken Burns + fade por escena → composición por escena
-    (subtítulo + voz) → concat. Cada paso está acotado en memoria."""
+    """Ensambla el video: b-roll/​Ken Burns + fade por escena → composición por
+    escena (subtítulo + voz) → concat. Cada paso está acotado en memoria."""
     tmp_dir = Path(workdir) if workdir else Path(out).parent
     tmp_dir.mkdir(parents=True, exist_ok=True)
     segs: list[Path] = []
-    for i, (still, st, en) in enumerate(zip(stills, starts, ends)):
+    for i, (asset, st, en) in enumerate(zip(assets, starts, ends)):
         dur = max(0.6, en - st)
         seg = tmp_dir / f"_seg{i}.mp4"
-        _render_segment(still, dur, i, size, seg)
+        if i < len(video_flags) and video_flags[i]:
+            _render_segment_video(asset, dur, i, size, seg)
+        else:
+            _render_segment(asset, dur, i, size, seg)
         segs.append(seg)
     return _compose_scenes(segs, captions, audio, starts, ends, size, total, out)
 
@@ -884,6 +998,81 @@ def _sentence_timings(sentences: list[str], total: float) -> tuple[list[float], 
     return starts, ends
 
 
+# ── Música de fondo (opcional) ───────────────────────────────
+
+_MUSIC_EXTS = {".mp3", ".m4a", ".wav", ".aac", ".ogg", ".opus", ".flac"}
+_MUSIC_NONE = {"", "none", "sin", "sin_musica", "sin música", "off", "no", "0"}
+
+
+def music_dir() -> Path:
+    """Carpeta de pistas: `EDGETAPE_MUSIC_DIR` o `backend/assets/music`."""
+    raw = os.environ.get("EDGETAPE_MUSIC_DIR")
+    if raw:
+        return Path(raw)
+    return Path(__file__).resolve().parent.parent / "assets" / "music"
+
+
+def list_music_tracks() -> list[str]:
+    """Nombres de archivo de las pistas disponibles (vacío si no hay carpeta)."""
+    d = music_dir()
+    if not d.is_dir():
+        return []
+    return sorted(
+        p.name for p in d.iterdir()
+        if p.is_file() and p.suffix.lower() in _MUSIC_EXTS
+    )
+
+
+def _resolve_music(choice: str | None) -> Path | None:
+    """Traduce la elección del usuario ("none" | "auto" | nombre de pista) a un archivo."""
+    if choice is None:
+        return None
+    key = str(choice).strip()
+    if key.lower() in _MUSIC_NONE:
+        return None
+    tracks = list_music_tracks()
+    if not tracks:
+        logger.warning("música solicitada pero no hay pistas en %s; se sigue sin música", music_dir())
+        return None
+    d = music_dir()
+    if key.lower() == "auto":
+        return d / random.choice(tracks)
+    for name in tracks:
+        if name == key or Path(name).stem.lower() == Path(key).stem.lower():
+            return d / name
+    logger.warning("pista '%s' no encontrada; se usa '%s'", key, tracks[0])
+    return d / tracks[0]
+
+
+def _mix_music(voice: str | None, total: float, music: Path, out: Path) -> str | None:
+    """Mezcla la pista bajo la voz (o genera audio solo con música). Nunca lanza."""
+    try:
+        volume = os.environ.get("EDGETAPE_MUSIC_VOLUME", "0.22")
+        if voice:
+            inputs = ["-i", voice, "-stream_loop", "-1", "-i", str(music)]
+        else:
+            inputs = [
+                "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+                "-stream_loop", "-1", "-i", str(music),
+            ]
+        graph = (
+            f"[1:a]volume={volume}[m];"
+            "[0:a][m]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[a]"
+        )
+        _run_ffmpeg(
+            [FFMPEG, "-y", "-hide_banner", "-loglevel", "error", *inputs,
+             "-filter_complex", graph, "-map", "[a]", "-t", f"{total:.3f}",
+             "-c:a", "aac", "-b:a", "128k", "-f", "mp4", str(out)],
+            timeout=300,
+        )
+        if out.exists() and out.stat().st_size > 0:
+            logger.info("música de fondo agregada: %s", music.name)
+            return str(out)
+    except Exception as exc:  # noqa: BLE001 — la música es opcional
+        logger.warning("mezcla de música falló (%s); se deja solo la voz", exc)
+    return None
+
+
 # ── Entrada usada por el pipeline ───────────────────────────
 
 
@@ -932,22 +1121,47 @@ def generate_ai_video(meta: dict, meta_path: Path | None, source: str | Path, tm
     starts, ends = _sentence_timings(sentences, total)
 
     n = len(sentences)
-    images = _fetch_scene_images(sentences, size, tmp)
-    if any(img is not None for img in images):
-        logger.info("imágenes montadas en %d de %d escenas", sum(1 for i in images if i), n)
+    queries = script_info.get("queries") or []
+    warnings: list[str] = []
+    assets = _fetch_scene_media(sentences, queries, size, tmp)
+    video_count = sum(1 for _, is_v in assets if is_v)
+    image_count = sum(1 for p, is_v in assets if p is not None and not is_v)
+    if video_count or image_count:
+        logger.info(
+            "material por escena: %d b-roll, %d imágenes, %d fondos (%d escenas)",
+            video_count, image_count, n - video_count - image_count, n,
+        )
     else:
-        logger.info("sin imágenes por escena — gradientes de marca (%d escenas)", n)
+        warnings.append("sin material de stock ni imágenes; se usaron fondos de marca")
+        logger.info("sin material por escena — gradientes de marca (%d escenas)", n)
+
+    music_path = _resolve_music(meta.get("music"))
+    if music_path is not None:
+        mixed = _mix_music(audio, total, music_path, tmp / "voice_music.m4a")
+        if mixed:
+            audio = mixed
+        else:
+            warnings.append("no se pudo mezclar la música de fondo")
 
     info = {"title": script_info.get("title") or prompt, "hook": script_info.get("hook") or prompt}
-    stills: list[Path] = [
-        _prepare_still(
-            "title" if i == 0 else ("end" if (i == n - 1 and n > 1) else "body"),
-            images[i], size, style, info, i, tmp,
-        )
+    paths: list[Path] = []
+    video_flags: list[bool] = []
+    for i in range(n):
+        path_i, is_video = assets[i]
+        if is_video and path_i is not None:
+            paths.append(path_i)
+            video_flags.append(True)
+        else:
+            paths.append(_prepare_still(
+                "title" if i == 0 else ("end" if (i == n - 1 and n > 1) else "body"),
+                path_i, size, style, info, i, tmp,
+            ))
+            video_flags.append(False)
+
+    keywords = [
+        (_scene_query(sentences[i]) if (assets[i][0] is not None and not assets[i][1]) else "")
         for i in range(n)
     ]
-
-    keywords = [(_scene_query(sentences[i]) if images[i] else "") for i in range(n)]
     cap_pngs = _render_captions(sentences, keywords, size, tmp)
     overlays: list[Path | None] = [
         None if (i == 0 or (i == n - 1 and n > 1)) else cap_pngs[i]
@@ -955,10 +1169,19 @@ def generate_ai_video(meta: dict, meta_path: Path | None, source: str | Path, tm
     ]
 
     try:
-        render_video(stills, overlays, audio, starts, ends, size, total, source, workdir=tmp)
+        render_video(paths, video_flags, overlays, audio, starts, ends, size, total, source, workdir=tmp)
     except Exception as exc:  # noqa: BLE001
         logger.warning("render por escenas FAILED (%s); reintentando con un solo fondo", exc)
+        warnings.append("el montaje por escenas falló; se usó un único fondo animado")
         _render_legacy_single_bg(script_info, sentences, audio, starts, ends, size, total, source, tmp)
+
+    try:
+        rendered_dur = probe_duration(source)
+        if rendered_dur <= 1.0:
+            warnings.append("el video renderizado quedó vacío o demasiado corto")
+    except Exception:  # noqa: BLE001
+        warnings.append("no se pudo validar la duración del video renderizado")
+    script_info["warnings"] = warnings
 
     if meta_path is not None:
         try:
