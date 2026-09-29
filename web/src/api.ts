@@ -546,6 +546,18 @@ export function getYoutubeAuthUrl(accountId: string): Promise<{ auth_url: string
   );
 }
 
+export function getTiktokAuthUrl(accountId: string): Promise<{ auth_url: string; redirect_uri: string }> {
+  return request<{ auth_url: string; redirect_uri: string }>(
+    `/api/accounts/${accountId}/tiktok/auth`,
+  );
+}
+
+export function getMetaAuthUrl(accountId: string): Promise<{ auth_url: string; redirect_uri: string }> {
+  return request<{ auth_url: string; redirect_uri: string }>(
+    `/api/accounts/${accountId}/meta/auth`,
+  );
+}
+
 export function getDashboard(): Promise<DashboardStats> {
   return request<DashboardStats>("/api/dashboard");
 }

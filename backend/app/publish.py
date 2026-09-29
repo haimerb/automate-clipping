@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from pathlib import Path
 
 from sqlalchemy import select
@@ -9,6 +10,7 @@ from sqlalchemy import select
 from . import youtube_publish as yt
 from . import meta_publish as meta
 from . import tiktok_publish as tiktok_pub
+from .auth import media_token
 from .db import SessionLocal
 from .media import extract_best_thumbnail
 from .models import Clip, Job, PlatformPost
@@ -40,6 +42,24 @@ PLATFORM_ACCOUNT_MAP = {
 }
 
 PUBLISHED_STATUSES = {"publicado"}
+
+
+def public_base_url() -> str | None:
+    """Dominio público del deploy (HF Space, dominio propio). Vacío = sin URL pública."""
+    return (os.environ.get("EDGETAPE_PUBLIC_BASE_URL") or "").rstrip("/") or None
+
+
+def public_clip_url(job_id: str, clip_id: str) -> str | None:
+    """Link firmado al clip exportado, para que Meta pueda descargarlo.
+
+    Instagram (Reels) exige una `video_url` pública: sin `EDGETAPE_PUBLIC_BASE_URL`
+    no se puede automatizar y el post queda como `manual`.
+    """
+    base = public_base_url()
+    if not base:
+        return None
+    token = media_token("clip", job_id, clip_id)
+    return f"{base}/api/public/clips/{job_id}/{clip_id}/{token}.mp4"
 
 
 def _resolve_thumbnail(store: JobStore, job: Job, clip: Clip) -> Path | None:
@@ -248,13 +268,15 @@ async def publish_one(
                     manual_error = None
                 else:
                     meta_result = await meta.publish_to_instagram(
-                        target_id, token, None, clip.title
+                        target_id, token,
+                        public_clip_url(job.id, clip.id),
+                        clip.title,
                     )
                     if meta_result is None:
                         manual_error = (
-                            "Instagram requiere una URL pública del video (video_url) "
-                            "accesible por los servidores de Meta para crear el Reel; "
-                            "sube el clip manualmente desde la app."
+                            "Instagram requiere una URL pública del video: define "
+                            "EDGETAPE_PUBLIC_BASE_URL con el dominio del deploy para que "
+                            "Meta pueda descargarlo; si no, súbelo manualmente desde la app."
                         )
             except Exception as exc:  # noqa: BLE001
                 status_code, reason = _extract_api_error(exc)
