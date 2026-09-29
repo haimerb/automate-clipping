@@ -50,6 +50,21 @@ def verify_password(password: str, stored: str) -> bool:
     return hmac.compare_digest(hexdigest, digest.hex())
 
 
+def media_token(*parts: str) -> str:
+    """Firma una URL de media pública (HMAC del secreto de la app).
+
+    Instagram exige que Meta pueda descargar el video desde una URL pública, sin
+    header `Authorization`. En vez de abrir un endpoint anónimo se sirve un link
+    firmado: solo es adivina quien tenga `EDGETAPE_JWT_SECRET`.
+    """
+    msg = "|".join(parts).encode("utf-8")
+    return hmac.new(_secret().encode("utf-8"), msg, hashlib.sha256).hexdigest()[:40]
+
+
+def verify_media_token(token: str, *parts: str) -> bool:
+    return hmac.compare_digest(token, media_token(*parts))
+
+
 def create_token(user: User) -> str:
     payload = {
         "sub": user.id,

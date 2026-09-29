@@ -19,7 +19,16 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { ACCOUNT_PLATFORM_LABELS, createAccount, deleteAccount, getAccounts, getYoutubeAuthUrl, updateAccount } from "../api";
+import {
+  ACCOUNT_PLATFORM_LABELS,
+  createAccount,
+  deleteAccount,
+  getAccounts,
+  getMetaAuthUrl,
+  getTiktokAuthUrl,
+  getYoutubeAuthUrl,
+  updateAccount,
+} from "../api";
 import type { AccountInput, LinkedAccount } from "../api";
 import { EDGE, MARK, MONO, ON_ACCENT, SURFACE } from "../theme";
 import ConfirmDialog from "./ConfirmDialog";
@@ -34,6 +43,57 @@ const EMPTY: AccountInput = {
   client_id: "",
   client_secret: "",
   redirect_uri: "",
+};
+
+/** Plataformas con OAuth propio (el resto sigue con el respaldo manual). */
+const OAUTH_PLATFORMS: Record<string, "youtube" | "tiktok" | "meta"> = {
+  youtube: "youtube",
+  tiktok: "tiktok",
+  facebook: "meta",
+  instagram: "meta",
+};
+
+const OAUTH_HELP: Record<"youtube" | "tiktok" | "meta", { title: string; body: React.ReactNode }> = {
+  youtube: {
+    title: "Credenciales OAuth de Google Cloud",
+    body: (
+      <>
+        Son las de tu proyecto en{" "}
+        <b>Google Cloud → APIs y servicios → Credenciales → IDs de cliente de OAuth 2.0</b>{" "}
+        (tipo “Web”). Sin ellas no se pueden subir clips de forma automática; sí puedes
+        usar el respaldo con enlace a Studio.
+      </>
+    ),
+  },
+  tiktok: {
+    title: "Credenciales de TikTok for Developers",
+    body: (
+      <>
+        De tu app en <b>developers.tiktok.com → My Apps → Content Posting API</b>. Pega el{" "}
+        <b>Client Key</b> y el <b>Client Secret</b>. Mientras la app no esté auditada, TikTok
+        solo acepta publicaciones <b>privadas (SELF_ONLY)</b>: el clip se sube pero queda en
+        tu perfil como privado hasta que aprueben la app.
+      </>
+    ),
+  },
+  meta: {
+    title: "Credenciales de Meta (Facebook Login)",
+    body: (
+      <>
+        De tu app en <b>developers.facebook.com → Facebook Login → Settings</b>. Pega el{" "}
+        <b>Client ID</b> y el <b>Client Secret</b>, y activa los permisos{" "}
+        <code>pages_show_list</code>, <code>pages_manage_posts</code> e{" "}
+        <code>instagram_basic, instagram_content_publish</code>. Al conectar se detectan tus
+        páginas y la cuenta de Instagram business asociada.
+      </>
+    ),
+  },
+};
+
+const REDIRECT_HINT: Record<"youtube" | "tiktok" | "meta", string> = {
+  youtube: "http://localhost:8000/api/youtube/callback",
+  tiktok: "http://localhost:8000/api/tiktok/callback",
+  meta: "http://localhost:8000/api/meta/callback",
 };
 
 interface FormState extends AccountInput {
@@ -71,26 +131,48 @@ export default function Accounts() {
   }, []);
 
   useEffect(() => {
-    if (window.location.search.includes("youtube=connected")) {
+    const search = window.location.search;
+    const clean = () => window.history.replaceState({}, "", window.location.pathname);
+    const done: Record<string, string> = {
+      "youtube=connected": "YouTube conectado. Ya puedes publicar clips desde Edgetape.",
+      "tiktok=connected": "TikTok conectado. Edgetape ya puede subir tus clips.",
+      "meta=connected": "Cuenta de Meta conectada (página e Instagram business detectados).",
+    };
+    const failed: Record<string, string> = {
+      "youtube=error": "No se pudo conectar YouTube. Revisa las credenciales y el token en la terminal del servidor.",
+      "tiktok=error": "No se pudo conectar TikTok. Revisa que el Client Key/Secret sean de la app correcta y que el redirect URI esté autorizado.",
+      "meta=error": "No se pudo conectar Meta. Revisa el Client ID/Secret y los permisos de la app.",
+      "meta=empty": "El login de Meta no devolvió ninguna página administrada.",
+      "meta=no_instagram": "Ninguna de tus páginas tiene una cuenta de Instagram business vinculada.",
+    };
+    const key = Object.keys(done).find((k) => search.includes(k));
+    if (key) {
       void refresh();
-      window.history.replaceState({}, "", window.location.pathname);
-      setSuccessMsg("YouTube conectado. Ya puedes publicar clips desde Edgetape.");
-    } else if (window.location.search.includes("youtube=error")) {
-      window.history.replaceState({}, "", window.location.pathname);
-      setError("No se pudo conectar YouTube. Revisa las credenciales y el token en la terminal del servidor.");
+      clean();
+      setSuccessMsg(done[key]);
+      return;
+    }
+    const bad = Object.keys(failed).find((k) => search.includes(k));
+    if (bad) {
+      clean();
+      setError(failed[bad]);
     }
   }, []);
 
-  async function connectYoutube(account: LinkedAccount) {
+  async function connect(account: LinkedAccount) {
+    const kind = OAUTH_PLATFORMS[account.platform];
+    if (!kind) return;
     setConnectBusy(account.id);
     setError(null);
     try {
-      console.log("Conectando YouTube para cuenta:", account.id, account.name);
-      const { auth_url } = await getYoutubeAuthUrl(account.id);
-      console.log("Auth URL recibida:", auth_url);
+      const { auth_url } =
+        kind === "youtube"
+          ? await getYoutubeAuthUrl(account.id)
+          : kind === "tiktok"
+            ? await getTiktokAuthUrl(account.id)
+            : await getMetaAuthUrl(account.id);
       window.location.href = auth_url;
     } catch (err) {
-      console.error("Error conectando YouTube:", err);
       setError(err instanceof Error ? err.message : "No se pudo iniciar la conexión");
       setConnectBusy(null);
     }
@@ -160,7 +242,7 @@ export default function Accounts() {
     }
   }
 
-  const isYoutube = form.platform === "youtube";
+  const oauthKind = OAUTH_PLATFORMS[form.platform] ?? null;
 
   return (
     <Box component="section" sx={{ py: { xs: 5, md: 7 } }}>
@@ -324,7 +406,7 @@ export default function Accounts() {
                         size="small"
                         variant={connected ? "outlined" : "contained"}
                         color={connected ? "inherit" : "primary"}
-                        onClick={() => { console.log("Click Conectar YouTube:", account.id); void connectYoutube(account); }}
+                        onClick={() => void connect(account)}
                         disabled={connectBusy === account.id}
                         sx={{ alignSelf: "flex-start" }}
                       >
@@ -334,6 +416,44 @@ export default function Accounts() {
                             ? "Reconectar YouTube"
                             : "Conectar YouTube"}
                       </Button>
+                    )}
+                    {account.platform === "tiktok" && (
+                      <Button
+                        size="small"
+                        variant={connected ? "outlined" : "contained"}
+                        color={connected ? "inherit" : "primary"}
+                        onClick={() => void connect(account)}
+                        disabled={connectBusy === account.id}
+                        sx={{ alignSelf: "flex-start" }}
+                      >
+                        {connectBusy === account.id
+                          ? "Conectando…"
+                          : connected
+                            ? "Reconectar TikTok"
+                            : "Conectar TikTok"}
+                      </Button>
+                    )}
+                    {(account.platform === "facebook" || account.platform === "instagram") && (
+                      <Button
+                        size="small"
+                        variant={connected ? "outlined" : "contained"}
+                        color={connected ? "inherit" : "primary"}
+                        onClick={() => void connect(account)}
+                        disabled={connectBusy === account.id}
+                        sx={{ alignSelf: "flex-start" }}
+                      >
+                        {connectBusy === account.id
+                          ? "Conectando…"
+                          : connected
+                            ? "Reconectar con Meta"
+                            : "Conectar con Meta"}
+                      </Button>
+                    )}
+                    {account.platform === "instagram" && !account.token && (
+                      <Typography variant="caption" color="text.secondary">
+                        Instagram necesita <code>EDGETAPE_PUBLIC_BASE_URL</code> en el servidor para
+                        que Meta pueda descargar el video; sin eso la publicación queda manual.
+                      </Typography>
                     )}
                     <Stack direction="row" spacing={1} sx={{ mt: "auto", pt: 1 }}>
                       <Button size="small" onClick={() => startEdit(account)}>
@@ -390,17 +510,14 @@ export default function Accounts() {
                 />
               </Box>
 
-              {isYoutube ? (
-                <Collapse in={isYoutube} sx={{ mt: 3 }}>
+              {oauthKind ? (
+                <Collapse in={Boolean(oauthKind)} sx={{ mt: 3 }}>
                   <Paper variant="outlined" sx={{ p: 2, bgcolor: SURFACE }}>
                     <Typography variant="overline" sx={{ display: "block", color: EDGE }}>
-                      Credenciales OAuth de Google Cloud
+                      {OAUTH_HELP[oauthKind].title}
                     </Typography>
                     <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 2 }}>
-                      Son las de tu proyecto en{" "}
-                      <b>Google Cloud → APIs y servicios → Credenciales → IDs de cliente de OAuth 2.0</b>{" "}
-                      (tipo “Web”). Sin ellas no se pueden subir clips de forma automática; sí puedes
-                      usar el respaldo con enlace a Studio.
+                      {OAUTH_HELP[oauthKind].body}
                     </Typography>
                     <Box
                       sx={{
@@ -410,8 +527,14 @@ export default function Accounts() {
                       }}
                     >
                       <TextField
-                        label="Client ID"
-                        placeholder="xxxx.apps.googleusercontent.com"
+                        label={oauthKind === "tiktok" ? "Client Key" : "Client ID"}
+                        placeholder={
+                          oauthKind === "tiktok"
+                            ? "aw1234567890"
+                            : oauthKind === "meta"
+                              ? "1234567890123456"
+                              : "xxxx.apps.googleusercontent.com"
+                        }
                         value={form.client_id ?? ""}
                         onChange={(e) => setForm({ ...form, client_id: e.target.value })}
                         slotProps={{ htmlInput: { spellCheck: false } }}
@@ -420,7 +543,11 @@ export default function Accounts() {
                         label="Client Secret"
                         type="password"
                         placeholder={
-                          editing?.has_client_secret ? "••••••  (guardado)" : "GOCSPX-…"
+                          editing?.has_client_secret
+                            ? "••••••  (guardado)"
+                            : oauthKind === "meta"
+                              ? "abc123…"
+                              : "GOCSPX-…"
                         }
                         value={form.client_secret}
                         onChange={(e) => setForm({ ...form, client_secret: e.target.value })}
@@ -433,26 +560,32 @@ export default function Accounts() {
                       />
                     </Box>
                     <TextField
-                      label="Redirect URI (autorizado en Google Cloud)"
-                      placeholder="http://localhost:8000/api/youtube/callback"
+                      label="Redirect URI (autorizado en la app)"
+                      placeholder={REDIRECT_HINT[oauthKind]}
                       value={form.redirect_uri ?? ""}
                       onChange={(e) => setForm({ ...form, redirect_uri: e.target.value })}
                       fullWidth
                       sx={{ mt: 2 }}
-                      helperText="Debe coincidir con el URI de redireccionamiento autorizado de tu cliente OAuth en Google Cloud."
+                      helperText="Debe coincidir con la URL de redireccionamiento autorizada en la app. En producción pon el dominio real (no localhost)."
                     />
                     <Alert severity="info" sx={{ mt: 2 }}>
-                      Después de guardar, pulsa <b>Conectar YouTube</b> en la tarjeta para autorizar la
-                      cuenta y obtener el refresh token.
+                      Después de guardar, pulsa{" "}
+                      <b>
+                        {form.platform === "youtube"
+                          ? "Conectar YouTube"
+                          : form.platform === "tiktok"
+                            ? "Conectar TikTok"
+                            : "Conectar con Meta"}
+                      </b>{" "}
+                      en la tarjeta para autorizar la cuenta y obtener el token.
                     </Alert>
                   </Paper>
                 </Collapse>
               ) : (
                 <Alert severity="info" sx={{ mt: 3 }}>
-                  Por ahora <b>{ACCOUNT_PLATFORM_LABELS[form.platform] ?? form.platform}</b> se
-                  publica con respaldo: Edgetape exporta el clip y te deja el enlace directo de
-                  subida con la cuenta atribuida. La publicación automática por API real (OAuth) está{" "}
-                  <b>pendiente</b> para TikTok y Facebook.
+                  <b>{ACCOUNT_PLATFORM_LABELS[form.platform] ?? form.platform}</b> se publica con
+                  respaldo: Edgetape exporta el clip y te deja el enlace directo de subida con la
+                  cuenta atribuida.
                 </Alert>
               )}
             </DialogContent>

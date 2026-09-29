@@ -5,6 +5,8 @@ import logging
 import os
 import time
 import urllib.parse
+from dataclasses import dataclass
+from urllib.parse import urlencode
 
 import httpx
 
@@ -15,6 +17,122 @@ API_VERSION = "v21.0"
 MAX_CHUNK = 8 * 1024 * 1024
 _POLL_RETRIES = 12
 _POLL_DELAY = 2.0
+
+DEFAULT_REDIRECT = "http://localhost:8000/api/meta/callback"
+OAUTH_SCOPES = (
+    "pages_show_list,pages_manage_posts,pages_read_engagement,"
+    "instagram_basic,instagram_content_publish"
+)
+
+
+@dataclass(frozen=True)
+class MetaCreds:
+    """Credenciales de la app de Meta (Facebook Login). Pueden venir de la cuenta
+    vinculada (client_id/client_secret) o del entorno."""
+
+    client_id: str
+    client_secret: str
+    redirect_uri: str
+
+
+def default_redirect_uri() -> str:
+    return os.environ.get("EDGETAPE_META_REDIRECT_URI") or DEFAULT_REDIRECT
+
+
+def creds_for(account=None, redirect_uri: str | None = None) -> MetaCreds | None:
+    """Credenciales de la app de Meta, priorizando las de la cuenta vinculada."""
+    if account is not None:
+        client_id = getattr(account, "client_id", None)
+        secret = getattr(account, "client_secret", None)
+        if client_id and secret:
+            uri = getattr(account, "redirect_uri", None) or redirect_uri or default_redirect_uri()
+            return MetaCreds(client_id, secret, uri)
+    client_id = os.environ.get("EDGETAPE_META_CLIENT_ID")
+    secret = os.environ.get("EDGETAPE_META_CLIENT_SECRET")
+    if client_id and secret:
+        return MetaCreds(client_id, secret, redirect_uri or default_redirect_uri())
+    return None
+
+
+def is_configured(account=None) -> bool:
+    return creds_for(account) is not None
+
+
+def auth_url(state: str, creds: MetaCreds) -> str:
+    params = {
+        "client_id": creds.client_id,
+        "redirect_uri": creds.redirect_uri,
+        "state": state,
+        "scope": OAUTH_SCOPES,
+        "response_type": "code",
+    }
+    return f"{GRAPH_URL}/{API_VERSION}/dialog/oauth?{urlencode(params)}"
+
+
+def _fb(client: httpx.Client, method: str, path: str, **kwargs) -> dict:
+    resp = client.request(method, _node_url(path), **kwargs)
+    resp.raise_for_status()
+    return resp.json() or {}
+
+
+def exchange_code(code: str, creds: MetaCreds, client: httpx.Client | None = None) -> str:
+    """Canjea el código por el token de usuario (de larga vida, ~60 días)."""
+    own = client is None
+    c = client or httpx.Client(timeout=30.0)
+    try:
+        data = _fb(
+            c,
+            "GET",
+            "oauth/access_token",
+            params={
+                "client_id": creds.client_id,
+                "client_secret": creds.client_secret,
+                "redirect_uri": creds.redirect_uri,
+                "code": code,
+            },
+        )
+    finally:
+        if own:
+            c.close()
+    token = data.get("access_token")
+    if not token:
+        raise RuntimeError(f"Meta no devolvió access_token: {str(data)[:300]}")
+    return str(token)
+
+
+def list_targets(user_token: str, client: httpx.Client | None = None) -> list[dict]:
+    """Páginas del usuario con su Page Access Token y su cuenta de Instagram.
+
+    Cada entrada: {page_id, page_name, page_token, ig_user_id, ig_username}.
+    """
+    own = client is None
+    c = client or httpx.Client(timeout=30.0)
+    try:
+        data = _fb(
+            c,
+            "GET",
+            "me/accounts",
+            params={
+                "fields": "id,name,access_token,instagram_business_account{id,username}",
+                "access_token": user_token,
+            },
+        )
+        targets: list[dict] = []
+        for page in data.get("data") or []:
+            ig = (page.get("instagram_business_account") or {})
+            targets.append(
+                {
+                    "page_id": str(page.get("id") or ""),
+                    "page_name": str(page.get("name") or ""),
+                    "page_token": str(page.get("access_token") or ""),
+                    "ig_user_id": str(ig.get("id") or ""),
+                    "ig_username": str(ig.get("username") or ""),
+                }
+            )
+    finally:
+        if own:
+            c.close()
+    return [t for t in targets if t["page_id"] and t["page_token"]]
 
 
 def _node_url(node: str, extra: str = "") -> str:

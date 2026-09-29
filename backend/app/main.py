@@ -13,10 +13,19 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .auth import create_token, get_current_user, get_current_user_media, hash_password, verify_password
+from .auth import (
+    create_token,
+    get_current_user,
+    get_current_user_media,
+    hash_password,
+    verify_media_token,
+    verify_password,
+)
 from . import ai_generate as aigen
 from .db import get_db, init_db
 from . import publish as pubmod
+from . import meta_publish as metapub
+from . import tiktok_publish as tiktok_pub
 from . import youtube_publish as ytpub
 from .llm_scorer import build_clip_selector
 from .media import extract_thumbnail
@@ -546,6 +555,130 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
         db.commit()
         return RedirectResponse("/?youtube=connected", status_code=302)
 
+    @app.get("/api/accounts/{account_id}/tiktok/auth")
+    def tiktok_auth_url(
+        account_id: str,
+        request: Request,
+        user: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ) -> dict:
+        account = db.scalar(
+            select(LinkedAccount).where(
+                LinkedAccount.id == account_id, LinkedAccount.user_id == user.id
+            )
+        )
+        if account is None:
+            raise HTTPException(status_code=404, detail="cuenta no encontrada")
+        if account.platform != "tiktok":
+            raise HTTPException(status_code=400, detail="La cuenta no es de TikTok")
+        derived_uri = f"{str(request.base_url).rstrip('/')}/api/tiktok/callback"
+        creds = tiktok_pub.creds_for(account, redirect_uri=derived_uri)
+        if creds is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Faltan las credenciales de TikTok (client_key y client_secret de tu app "
+                    "de TikTok for Developers). Regístralas en el formulario de la cuenta o "
+                    "define EDGETAPE_TIKTOK_CLIENT_KEY y EDGETAPE_TIKTOK_CLIENT_SECRET."
+                ),
+            )
+        return {
+            "auth_url": tiktok_pub.auth_url(account.id, creds),
+            "redirect_uri": creds.redirect_uri,
+        }
+
+    @app.get("/api/tiktok/callback")
+    def tiktok_callback(
+        code: str,
+        state: str,
+        request: Request,
+        db: Session = Depends(get_db),
+    ) -> RedirectResponse:
+        account = db.get(LinkedAccount, state)
+        if account is None or account.platform != "tiktok":
+            return RedirectResponse("/?tiktok=error", status_code=302)
+        derived_uri = f"{str(request.base_url).rstrip('/')}/api/tiktok/callback"
+        creds = tiktok_pub.creds_for(account, redirect_uri=derived_uri)
+        if creds is None:
+            return RedirectResponse("/?tiktok=error", status_code=302)
+        try:
+            payload = tiktok_pub.exchange_code(code, creds)
+        except Exception:  # noqa: BLE001
+            return RedirectResponse("/?tiktok=error", status_code=302)
+        refresh_token = payload.get("refresh_token")
+        if not refresh_token:
+            return RedirectResponse("/?tiktok=error", status_code=302)
+        account.token = str(refresh_token)
+        db.commit()
+        return RedirectResponse("/?tiktok=connected", status_code=302)
+
+    @app.get("/api/accounts/{account_id}/meta/auth")
+    def meta_auth_url(
+        account_id: str,
+        request: Request,
+        user: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ) -> dict:
+        account = db.scalar(
+            select(LinkedAccount).where(
+                LinkedAccount.id == account_id, LinkedAccount.user_id == user.id
+            )
+        )
+        if account is None:
+            raise HTTPException(status_code=404, detail="cuenta no encontrada")
+        if account.platform not in ("facebook", "instagram"):
+            raise HTTPException(
+                status_code=400, detail="La cuenta no es de Facebook ni de Instagram"
+            )
+        derived_uri = f"{str(request.base_url).rstrip('/')}/api/meta/callback"
+        creds = metapub.creds_for(account, redirect_uri=derived_uri)
+        if creds is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Faltan las credenciales de Meta (client_id y client_secret de tu app en "
+                    "developers.facebook.com). Regístralas en el formulario de la cuenta o "
+                    "define EDGETAPE_META_CLIENT_ID y EDGETAPE_META_CLIENT_SECRET."
+                ),
+            )
+        return {"auth_url": metapub.auth_url(account.id, creds), "redirect_uri": creds.redirect_uri}
+
+    @app.get("/api/meta/callback")
+    def meta_callback(
+        code: str,
+        state: str,
+        request: Request,
+        db: Session = Depends(get_db),
+    ) -> RedirectResponse:
+        """Facebook Login → Page Access Token + cuenta de Instagram business."""
+        account = db.get(LinkedAccount, state)
+        if account is None or account.platform not in ("facebook", "instagram"):
+            return RedirectResponse("/?meta=error", status_code=302)
+        derived_uri = f"{str(request.base_url).rstrip('/')}/api/meta/callback"
+        creds = metapub.creds_for(account, redirect_uri=derived_uri)
+        if creds is None:
+            return RedirectResponse("/?meta=error", status_code=302)
+        try:
+            user_token = metapub.exchange_code(code, creds)
+            targets = metapub.list_targets(user_token)
+        except Exception:  # noqa: BLE001
+            return RedirectResponse("/?meta=error", status_code=302)
+        if not targets:
+            return RedirectResponse("/?meta=empty", status_code=302)
+        if account.platform == "instagram":
+            match = next((t for t in targets if t["ig_user_id"]), None)
+            if match is None:
+                return RedirectResponse("/?meta=no_instagram", status_code=302)
+            account.handle = match["ig_user_id"]
+            account.name = f"@{match['ig_username']}" if match["ig_username"] else account.name
+        else:
+            match = targets[0]
+            account.handle = match["page_id"]
+            account.name = match["page_name"] or account.name
+        account.token = match["page_token"]
+        db.commit()
+        return RedirectResponse("/?meta=connected", status_code=302)
+
     # ── jobs ──────────────────────────────────────────
 
     @app.post("/api/jobs", status_code=202)
@@ -906,6 +1039,24 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
         if not clip.exported or not clip.export_name:
             raise HTTPException(status_code=404, detail="clip not exported")
         path = store.exports_dir(job.id) / clip.export_name
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="export file missing")
+        return FileResponse(path, media_type="video/mp4")
+
+    @app.get("/api/public/clips/{job_id}/{clip_id}/{token}.mp4")
+    def public_clip(job_id: str, clip_id: str, token: str) -> FileResponse:
+        """Clip exportado con link firmado, para que Meta (Instagram Reels) lo descargue.
+
+        No pide `Authorization` porque los servidores de Meta no pueden mandar el
+        Bearer del usuario; la firma HMAC con EDGETAPE_JWT_SECRET es lo que autoriza.
+        """
+        if not verify_media_token(token, "clip", job_id, clip_id):
+            raise HTTPException(status_code=404, detail="clip no encontrado")
+        clip = store.get_clips(job_id)
+        match = next((c for c in clip if c.id == clip_id), None)
+        if match is None or not match.exported or not match.export_name:
+            raise HTTPException(status_code=404, detail="clip not exported")
+        path = store.exports_dir(job_id) / match.export_name
         if not path.exists():
             raise HTTPException(status_code=404, detail="export file missing")
         return FileResponse(path, media_type="video/mp4")

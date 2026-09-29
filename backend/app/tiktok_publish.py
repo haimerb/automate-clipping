@@ -41,6 +41,21 @@ def default_redirect_uri() -> str:
     return os.environ.get("EDGETAPE_TIKTOK_REDIRECT_URI") or DEFAULT_REDIRECT
 
 
+def default_privacy() -> str:
+    """Nivel de privacidad de la publicación.
+
+    `SELF_ONLY` es el único valor que acepta una app sin auditar; con la app
+    aprobada por TikTok se puede publicar para todos con
+    `EDGETAPE_TIKTOK_PRIVACY=PUBLIC_TO_EVERYONE`.
+    """
+    value = (os.environ.get("EDGETAPE_TIKTOK_PRIVACY") or "SELF_ONLY").strip().upper()
+    allowed = {"SELF_ONLY", "FRIENDS", "PUBLIC_TO_EVERYONE"}
+    if value not in allowed:
+        logger.warning("EDGETAPE_TIKTOK_PRIVACY inválido (%s); usando SELF_ONLY", value)
+        return "SELF_ONLY"
+    return value
+
+
 def creds_for(account=None, redirect_uri: str | None = None) -> TiktokCreds | None:
     """Devuelve credenciales para subir a TikTok, priorizando las de la cuenta."""
     default = default_redirect_uri()
@@ -114,15 +129,20 @@ def _access_token(refresh_token: str, creds: TiktokCreds, client: httpx.Client |
 
 
 def _init_upload(
-    path: str, access_token: str, creds: TiktokCreds, client: httpx.Client
+    path: str,
+    access_token: str,
+    creds: TiktokCreds,
+    client: httpx.Client,
+    caption: str = "",
+    privacy: str = "",
 ) -> dict:
     size = os.path.getsize(path)
     chunk_size = min(max(size, 1), 64 * 1024 * 1024)
     total_chunks = max(1, math.ceil(size / chunk_size))
     body = {
         "post_info": {
-            "title": "",
-            "privacy_level": "SELF_ONLY",
+            "title": caption[:1500],
+            "privacy_level": privacy or default_privacy(),
             "disable_duet": False,
             "disable_comment": False,
             "disable_stitch": False,
@@ -197,8 +217,11 @@ def _upload_sync(
     token = _access_token(refresh_token, creds, client)
     own = client is None
     c = client or httpx.Client(timeout=120.0)
+    caption = title.strip()
+    if description.strip():
+        caption = f"{caption}\n{description}".strip()
     try:
-        init = _init_upload(path, token, creds, c)
+        init = _init_upload(path, token, creds, c, caption=caption)
         _upload_chunks(init["upload_url"], path, init["chunk_size"], c)
         status = _finalize(
             init["publish_id"], init["chunk_size"], init["total_chunk_count"], token, c
