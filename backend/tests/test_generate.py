@@ -6,6 +6,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -60,6 +61,41 @@ def _write_generate_meta(store: JobStore, job_id: str, **overrides) -> None:
     }
     (store.job_dir(job_id) / "generate_meta.json").write_text(
         json.dumps(meta, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+_FAKE_SCRIPT = {
+    "title": "Vender es entender la emoción",
+    "hook": "¿Vendes o entiendes a tu cliente?",
+    "script": (
+        "La mayoría de las marcas empujan el producto antes de escuchar. "
+        "Quien entiende la emoción vende sin insistir. "
+        "Primero pregunta, después ofrece. "
+        "La confianza se construye en cada conversación honesta. "
+        "Ese es el cambio que mueve la aguja."
+    ),
+    "sentences": [
+        "La mayoría de las marcas empujan el producto antes de escuchar.",
+        "Quien entiende la emoción vende sin insistir.",
+        "Primero pregunta, después ofrece.",
+        "La confianza se construye en cada conversación honesta.",
+        "Ese es el cambio que mueve la aguja.",
+    ],
+    "tags": ["ventas", "marketing", "empatia"],
+    "queries": [
+        "shop owner talking",
+        "customer handshake",
+        "team meeting office",
+        "person smiling conversation",
+        "sunrise over city",
+    ],
+}
+
+
+def _stub_script(monkeypatch: pytest.MonkeyPatch) -> None:
+    """El guion lo escribe el LLM; en tests se inyecta uno fijo (sin red)."""
+    monkeypatch.setattr(
+        "app.ai_generate.write_script", lambda *a, **k: dict(_FAKE_SCRIPT)
     )
 
 
@@ -217,6 +253,7 @@ def _run_generate_job(
 
     monkeypatch.setattr("app.ai_generate.build_voiceover", lambda *a, **k: None)
     monkeypatch.setattr("app.tasks.enqueue_auto_publish", _fake_enqueue)
+    _stub_script(monkeypatch)
     asyncio.run(run_job(job.id, store, MockTranscriber()))
     return store, job.id, called
 
@@ -301,15 +338,520 @@ def test_generate_source_respects_meta_prompt(
     assert clips[0].exported and clips[0].export_name
 
 
-def test_ai_generate_fallback_script_scales_with_duration() -> None:
-    """El fallback determinístico cubre la duración (por si el LLM no está)."""
-    short = aig._fallback_script("una frase breve", 30)
-    long = aig._fallback_script("La mejor época de Boca Juniors", 900)
-    assert len(long["sentences"]) <= aig.SCENES_MAX_SENTENCES
-    assert 90 <= len(long["script"].split()) <= 9 * 900
-    assert long["sentences"] and long["title"]
-    assert len(short["sentences"]) <= len(long["sentences"])
-    assert "Boca Juniors" in long["title"]
+def test_ai_generate_scene_count_follows_words_not_duration() -> None:
+    """Una escena ≈ WORDS_PER_SCENE palabras (antes: 1 escena cada 40s fijos)."""
+    assert aig.WORD_RATE == 2.2
+    # calibrado contra gpt-oss-20b: se le piden 25 y escribe ~13-14
+    assert aig.WORDS_PER_SCENE == 14
+    # 360s a 2.2 palabras/s = 792 palabras = ~57 escenas de 14 palabras
+    assert aig._scene_count(360) == 57
+    # 15s da el mínimo (4 escenas), no 1
+    assert aig._scene_count(15) == aig.SCENES_MIN
+    # 900s (15 min) queda acotado por SCENES_MAX
+    assert aig._scene_count(900) == aig.SCENES_MAX
+    # un formato largo da escenas cortas, no oraciones de 90 palabras
+    for dur in (180, 360, 600, 900):
+        n = aig._scene_count(dur)
+        words_per_scene = int(dur * aig.WORD_RATE) / n
+        assert words_per_scene <= 25, (dur, n, words_per_scene)
+        # ~6-10s de plano por escena: ritmo de narrado largo, no un plano de 40s
+        assert 4.0 <= dur / n <= 11.0, (dur, n, dur / n)
+
+
+def test_ai_generate_scene_blocks_split_long_scripts() -> None:
+    """El guion largo se pide en bloques de SCRIPT_BLOCK_SCENES escenas."""
+    spans = aig._scene_blocks(32)
+    assert len(spans) == 4
+    assert spans[0] == (0, aig.SCRIPT_BLOCK_SCENES)
+    assert spans[-1][1] == 32
+    # la última escena no se pierde en el reparto
+    assert sum(b - a for a, b in spans) == 32
+    # un short cabe en un solo bloque
+    assert len(aig._scene_blocks(aig._scene_count(15))) == 1
+    # todo guion largo se parte (defensa contra volver al request único)
+    assert len(aig._scene_blocks(aig._scene_count(360))) > 1
+
+
+# ── queries visuales ─────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "city skyline at night",
+        "happy family cooking",
+        "woman running marathon",
+        "sunrise over mountains",
+    ],
+)
+def test_ai_generate_usable_query_accepted(query: str) -> None:
+    assert aig.is_usable_query(query) is True
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "",                       # vacía
+        "saber",                  # una sola palabra
+        "saber hacer especial",    # stemmed keywords del guion en español
+        "entender historia mirar", # la query que veía el log de Pexels
+        "para que puedes",        # conectores en español
+        "ciudad historia",         # tema en vez de imagen
+        "corazónLatino",          # ñ: no es query en inglés
+        "año nuevo",              # con tilde
+    ],
+)
+def test_ai_generate_garbage_query_rejected(query: str) -> None:
+    """Lo que antes se mandaba a Pexels tal cual y no devolvía nada útil."""
+    assert aig.is_usable_query(query) is False
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["City Skyline at Night", "Sunrise Over The Beach"],
+)
+def test_ai_generate_titlecase_query_accepted(query: str) -> None:
+    """Title case es solo capitalización: Pexels lo indexa bien, no se rechaza."""
+    assert aig.is_usable_query(query) is True
+
+
+
+def test_ai_generate_fetch_scene_media_skips_bad_queries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Una query en español no se envía a Pexels: la escena cae a Wikimedia."""
+    searched: list[str] = []
+    monkeypatch.setenv("EDGETAPE_AI_IMAGES", "1")
+    monkeypatch.setenv("EDGETAPE_PEXELS_API_KEY", "k")
+    monkeypatch.setenv("EDGETAPE_PIXABAY_API_KEY", "")
+    monkeypatch.setattr("app.materials.download", lambda *a, **k: False)
+
+    class _Lib:
+        def search(self, query, *a, **k):
+            searched.append(query)
+            return []
+
+        def take(self, picks):
+            return picks[0] if picks else None
+
+    monkeypatch.setattr("app.materials.build_library", lambda: _Lib())
+    monkeypatch.setattr("app.ai_generate._fetch_wikimedia_images", lambda *a, **k: [None] * 5)
+
+    # las escenas 0 (título) y 4 (end card) no buscan material por diseño
+    sentences = ["a.", "b.", "c.", "d.", "e."]
+    queries = ["cat sleeping", "city skyline", "saber hacer especial", "sunrise beach", "dog running"]
+    aig._fetch_scene_media(sentences, queries, (1080, 1920), tmp_path)
+
+    # de las 3 escenas de cuerpo solo llegaron al buscador las 2 queries en inglés
+    assert set(searched) == {"city skyline", "sunrise beach"}
+    # las tarjetas ni se buscan aunque la query sea buena
+    assert "cat sleeping" not in searched
+    assert "dog running" not in searched
+
+
+# ── duración exacta ───────────────────────────────────────────
+
+
+def test_ai_generate_fit_audio_compresses_to_exact_duration(tmp_path: Path) -> None:
+    """La locución más larga que el slot se acelera, no estira el video."""
+    long_audio = tmp_path / "long.m4a"
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=18",
+            "-c:a", "aac", str(long_audio),
+        ],
+        check=True,
+    )
+    out = tmp_path / "fitted.m4a"
+    fitted = aig._fit_audio(str(long_audio), 15.0, out)
+    assert fitted is not None and Path(fitted).exists()
+    assert 14.5 <= probe_duration(fitted) <= 15.5
+
+
+def test_ai_generate_fit_audio_pads_short_voiceover(tmp_path: Path) -> None:
+    """La locución más corta se rellena con silencio hasta el final."""
+    short_audio = tmp_path / "short.m4a"
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=4",
+            "-c:a", "aac", str(short_audio),
+        ],
+        check=True,
+    )
+    out = tmp_path / "padded.m4a"
+    fitted = aig._fit_audio(str(short_audio), 15.0, out)
+    assert fitted is not None
+    assert 14.5 <= probe_duration(fitted) <= 15.5
+
+
+def test_ai_generate_fit_audio_keeps_matching_duration(tmp_path: Path) -> None:
+    """Si ya dura lo pedido no se reprocesa (devuelve la ruta original)."""
+    audio = tmp_path / "ok.m4a"
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=15",
+            "-c:a", "aac", str(audio),
+        ],
+        check=True,
+    )
+    assert aig._fit_audio(str(audio), 15.0, tmp_path / "nope.m4a") == str(audio)
+    assert not (tmp_path / "nope.m4a").exists()
+
+
+def test_ai_generate_card_seconds_are_capped() -> None:
+    """La tarjeta de título y la end card duran 1,5-3s, no se comen el video."""
+    assert aig._card_seconds(15) == 1.5
+    assert aig._card_seconds(60) == 3.0
+    assert aig._card_seconds(900) == 3.0
+
+
+def test_ai_generate_title_and_end_cards_do_not_eat_video() -> None:
+    """En 15s con 4 escenas las tarjetas no se llevan 7,5s de los 15."""
+    sentences = [f"Escena {i} de cuerpo con unas cuantas palabras." for i in range(4)]
+    total = 15.0
+    card = aig._card_seconds(total)
+    starts, ends = aig._sentence_timings(sentences, total, card, card)
+    assert len(starts) == len(ends) == 4
+    assert starts == sorted(starts) and ends == sorted(ends)
+    # contiguo y sin huecos
+    assert starts[0] == 0.0 and ends[-1] == total
+    for i in range(3):
+        assert abs(ends[i] - starts[i + 1]) < 1e-6
+    # la tarjeta de título y la end card están acotadas
+    assert abs((ends[0] - starts[0]) - card) < 1e-6
+    assert abs((ends[-1] - starts[-1]) - card) < 1e-6
+    # el cuerpo se queda con el resto
+    body = (ends[2] - starts[1])
+    assert body >= total - 2 * card - 1e-6
+    assert body > 6.0
+    # sin head/tail el comportamiento antiguo se mantiene
+    plain_s, plain_e = aig._sentence_timings(sentences, total)
+    assert plain_s[0] == 0.0 and plain_e[-1] == total
+
+
+# ── LLM del guion: presupuesto de tokens y fallo explícito ───
+
+
+class _LLM:
+    """MockTransport que captura los payloads y devuelve respuestas preparadas."""
+
+    def __init__(self, responses: list, status: int = 200) -> None:
+        self.responses = list(responses)
+        self.status = status
+        self.payloads: list[dict] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        self.payloads.append(payload)
+        if self.status != 200:
+            return httpx.Response(self.status, text="error", request=request)
+        body = self.responses.pop(0) if self.responses else ""
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": body}, "finish_reason": "stop"}
+                ]
+            },
+            request=request,
+        )
+
+
+def _llm_env(monkeypatch: pytest.MonkeyPatch, model: str = "openai/gpt-oss-20b") -> None:
+    monkeypatch.setenv("EDGETAPE_LLM_BASE_URL", "https://api.test/v1")
+    monkeypatch.setenv("EDGETAPE_LLM_MODEL", model)
+    monkeypatch.setenv("EDGETAPE_LLM_API_KEY", "sk-test")
+    monkeypatch.setenv("EDGETAPE_GROQ_API_KEY", "")
+
+
+def _patch_httpx(monkeypatch: pytest.MonkeyPatch, transport) -> None:
+    real_client = httpx.Client
+
+    def _client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr("app.ai_generate.httpx.Client", _client)
+
+
+def test_ai_generate_complete_sends_token_budget_and_low_reasoning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gpt-oss se come el presupuesto pensando: hay que cappingarlo y bajar el effort.
+
+    Sin esto Groq devuelve 2048 tokens consumidos, `content=""` y
+    `finish_reason="length"` — el guion vacío que venía del fallback.
+    """
+    _llm_env(monkeypatch)
+    llm = _LLM(['{"ok": true}'])
+    _patch_httpx(monkeypatch, httpx.MockTransport(llm))
+
+    out = aig._complete("sys", "user", max_tokens=1200)
+    assert out == '{"ok": true}'
+    payload = llm.payloads[0]
+    assert payload["reasoning_effort"] == "low"
+    assert payload["max_completion_tokens"] >= 1200
+
+
+@pytest.mark.parametrize(
+    "label,raw",
+    [
+        (
+            "comillas sueltas en el guion",
+            '{"title": "T", "script": "El dijo \\"hola\\" y se fue. Luego '
+            'volvio bien a su casa.", "queries": ["x y"]}',
+        ),
+        (
+            "salto de linea crudo",
+            '{\n "script": "Uno dice \\"si\\".\nDos dice \\"no\\" al final.",\n'
+            ' "queries": ["a b", "c d"],}',
+        ),
+        (
+            "coma suelta antes del cierre",
+            '{"script": "Uno. Dos. Tres.", "queries": ["a b", "c d"],}',
+        ),
+        (
+            "fence de markdown",
+            '```json\n{"title": "T", "script": "Uno. Dos. Tres. Cuatro.", '
+            '"queries": ["a b", "c d"]}\n```',
+        ),
+    ],
+)
+def test_ai_generate_parses_messy_llm_json(label: str, raw: str) -> None:
+    """El LLM rompe el formato JSON de formas previsibles: hay que repararlas.
+
+    Antes, un JSON roto en el bloque 3 de 8 tumbaba el guion entero.
+    """
+    parsed = aig._parse_script_json(raw)
+    assert parsed["script"]
+    assert len(parsed["script"]) >= 10, label
+    assert parsed["queries"], label
+
+
+def test_ai_generate_complete_raises_on_empty_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`content=""` es un fallo, no un guion vacío: debe levantar, no devolver ''."""
+    _llm_env(monkeypatch)
+
+    def _empty(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": ""}, "finish_reason": "length"}]},
+            request=request,
+        )
+
+    monkeypatch.setattr("app.ai_generate.time.sleep", lambda *_: None)
+    _patch_httpx(monkeypatch, httpx.MockTransport(_empty))
+
+    with pytest.raises(aig.ScriptGenerationError, match="guion"):
+        aig._complete("sys", "user")
+
+
+def test_ai_generate_complete_rejects_dead_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Un 400 no se reintenta (modelo dado de baja): el guion no se puede escribir."""
+    _llm_env(monkeypatch, model="gemma2-9b-it")
+    llm = _LLM([], status=400)
+    _patch_httpx(monkeypatch, httpx.MockTransport(llm))
+
+    with pytest.raises(aig.ScriptGenerationError, match="400"):
+        aig._complete("sys", "user")
+    # sin reintentos: un solo request
+    assert len(llm.payloads) == 1
+
+
+def test_ai_generate_complete_drops_reasoning_effort_on_400(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Un endpoint que no conoce `reasoning_effort` se reintenta sin él."""
+    _llm_env(monkeypatch, model="gpt-4o-mini")
+    calls: list[dict] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        calls.append(payload)
+        if "reasoning_effort" in payload:
+            return httpx.Response(400, text="unknown param", request=request)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "hola"}, "finish_reason": "stop"}]},
+            request=request,
+        )
+
+    _patch_httpx(monkeypatch, httpx.MockTransport(_handler))
+    assert aig._complete("sys", "user") == "hola"
+    assert "reasoning_effort" not in calls[-1]
+
+
+def test_ai_generate_complete_raises_without_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sin LLM el job debe fallar, no inventar un guion de relleno."""
+    monkeypatch.setenv("EDGETAPE_LLM_BASE_URL", "")
+    monkeypatch.setenv("EDGETAPE_LLM_MODEL", "")
+    monkeypatch.setenv("EDGETAPE_GROQ_API_KEY", "")
+    with pytest.raises(aig.ScriptGenerationError, match="no hay LLM configurado"):
+        aig.write_script(PROMPT, 30.0, "professional", "youtube_shorts")
+
+
+def test_ai_generate_default_groq_model_is_alive(monkeypatch: pytest.MonkeyPatch) -> None:
+    """El default directo de Groq no puede ser un modelo dado de baja."""
+    monkeypatch.delenv("EDGETAPE_GROQ_MODEL", raising=False)
+    assert aig.GROQ_SCRIPT_MODEL == "openai/gpt-oss-20b"
+    assert "gemma" not in aig.GROQ_SCRIPT_MODEL
+
+
+def _fake_block_prompt(n: int = 8, words_each: int = 25) -> str:
+    """Bloque de escenas creíble: oraciones largas (pasa el filtro de 3 palabras)
+    y suficientes palabras para que no se dispare el reintento de bloque corto."""
+    sentences = ". ".join(
+        " ".join(f"palabra{i}{j}" for j in range(words_each)) for i in range(n)
+    ) + "."
+    return json.dumps({
+        "title": "El tema en detalle",
+        "hook": "¿Por qué importa?",
+        "tags": ["tema"],
+        "script": sentences,
+        "queries": [f"scene number {i}" for i in range(n)],
+    })
+
+
+def test_ai_generate_write_script_chunks_long_video(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Un video de 6 min se pide en varios bloques y se concatena sin perder escenas."""
+    _llm_env(monkeypatch)
+    calls: list[dict] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        calls.append(payload)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": _fake_block_prompt()}, "finish_reason": "stop"}
+                ]
+            },
+            request=request,
+        )
+
+    _patch_httpx(monkeypatch, httpx.MockTransport(_handler))
+    info = aig.write_script(PROMPT, 360.0, "professional", "youtube")
+
+    nscenes = aig._scene_count(360.0)
+    nblocks = len(aig._scene_blocks(nscenes))
+    assert nblocks > 1, "un guion de 6 min debe partirse"
+    # un request por bloque: el guion entra en el presupuesto de tokens
+    assert len(calls) == nblocks
+    # el primero trae la metadata, el resto solo escenas
+    assert info["title"] == "El tema en detalle"
+    assert info["hook"] == "¿Por qué importa?"
+    assert info["tags"] == ["tema"]
+    # los bloques se concatenan en orden (topado por SCENES_MAX_SENTENCES)
+    assert len(info["sentences"]) == min(8 * nblocks, aig.SCENES_MAX_SENTENCES)
+    assert len(info["queries"]) == len(info["sentences"])
+    assert all(p["max_completion_tokens"] > 0 for p in calls)
+    # el 2º bloque recibe el contexto del 1º (las 3 últimas oraciones, para no repetir)
+    assert "Lo último que escribiste" in calls[1]["messages"][1]["content"]
+    assert "palabra724" in calls[1]["messages"][1]["content"]
+
+
+def test_ai_generate_write_script_retries_short_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Un bloque corto se reintenta: si no, el video queda mudo a la mitad."""
+    _llm_env(monkeypatch)
+    # 3 oraciones válidas (≥3 palabras) pero muy por debajo del presupuesto
+    short = json.dumps({
+        "title": "T", "hook": "H",
+        "script": "Primera frase aqui. Segunda frase aqui. Tercera frase aqui.",
+        "queries": ["a b", "c d", "e f"],
+    })
+    lengths: list[int] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        lengths.append(1)
+        body = short if len(lengths) == 1 else _fake_block_prompt()
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": body}, "finish_reason": "stop"}]},
+            request=request,
+        )
+
+    _patch_httpx(monkeypatch, httpx.MockTransport(_handler))
+    info = aig.write_script(PROMPT, 360.0, "professional", "youtube")
+
+    # 2 requests para el primer bloque (corto + reintento) y 1 por cada resto
+    nblocks = len(aig._scene_blocks(aig._scene_count(360.0)))
+    assert len(lengths) == nblocks + 1
+    assert len(info["sentences"]) > 3
+
+
+def test_ai_generate_write_script_short_is_one_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Un short cabe en un solo request."""
+    _llm_env(monkeypatch)
+    llm = _LLM([_fake_block_prompt(4, 12)])
+    _patch_httpx(monkeypatch, httpx.MockTransport(llm))
+
+    info = aig.write_script(PROMPT, 15.0, "professional", "youtube_shorts")
+    assert len(llm.payloads) == 1
+    assert info["title"] == "El tema en detalle"
+    assert len(info["sentences"]) == 4
+    assert len(info["queries"]) == 4
+
+
+def test_ai_generate_write_script_fails_when_a_block_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Un bloque ilegible tumba el job con un mensaje claro (no un guion de relleno)."""
+    _llm_env(monkeypatch)
+    state = {"n": 0}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        state["n"] += 1
+        if state["n"] == 1:
+            body = {"title": "t", "hook": "h", "script": "Uno. Dos.", "queries": ["a", "b"]}
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": json.dumps(body)},
+                                  "finish_reason": "stop"}]},
+                request=request,
+            )
+        return httpx.Response(200, json={"choices": [{"message": {"content": ""},
+                                                      "finish_reason": "length"}]},
+                              request=request)
+
+    monkeypatch.setattr("app.ai_generate.time.sleep", lambda *_: None)
+    _patch_httpx(monkeypatch, httpx.MockTransport(_handler))
+
+    with pytest.raises(aig.ScriptGenerationError):
+        aig.write_script(PROMPT, 360.0, "professional", "youtube")
+
+
+def test_run_job_generate_fails_without_llm(
+    tmp_path: Path, user_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sin guion el job queda `failed` con el motivo — no `done` con video de prueba."""
+    storage = tmp_path / "storage"
+    store = JobStore(storage)
+    job = store.create_job(
+        "IA sin LLM", source="generate", source_url=None, owner_id=user_id
+    )
+    _write_generate_meta(store, job.id, duration=15)
+    monkeypatch.setattr("app.ai_generate.build_voiceover", lambda *a, **k: None)
+    monkeypatch.setenv("EDGETAPE_LLM_BASE_URL", "")
+    monkeypatch.setenv("EDGETAPE_LLM_MODEL", "")
+    monkeypatch.setenv("EDGETAPE_GROQ_API_KEY", "")
+
+    asyncio.run(run_job(job.id, store, MockTranscriber()))
+
+    job = store.get_job(job.id)
+    assert job is not None and job.status == "failed"
+    assert job.error and "LLM" in job.error
+    # no se generó un video de relleno
+    assert not store.source_path(job.id).exists()
 
 
 def test_ai_generate_size_for() -> None:
@@ -340,6 +882,24 @@ def test_ai_generate_scene_media_offline(tmp_path: Path) -> None:
         ["a.", "b.", "c."], ["one", "two", "three"], (1080, 1920), tmp_path
     )
     assert assets == [(None, False)] * 3
+
+
+def test_broll_budget_covers_every_body_scene() -> None:
+    """El techo de búsqueda debe alcanzar para TODAS las escenas del cuerpo.
+
+    Regresión: con 2,5s por escena el techo se agotaba en la escena 22 de 57 y
+    las 35 restantes salían en gradiente de marca (68% del video sin b-roll).
+    """
+    from app import ai_generate as a
+
+    # 6 min: 57 escenas, 55 del cuerpo -> el presupuesto cubre las 55 a ~6s
+    n57 = a._scene_count(360)
+    budget = max(45.0, min(540.0, (n57 - 2) * a._BROLL_SECONDS_PER_SCENE))
+    assert budget >= (n57 - 2) * 5.0, (n57, budget)
+    # 15 min: el tope de escenas (90) no debe dejarnos sin presupuesto
+    n90 = a._scene_count(900)
+    budget90 = max(45.0, min(540.0, (n90 - 2) * a._BROLL_SECONDS_PER_SCENE))
+    assert budget90 >= (n90 - 2) * 5.0, (n90, budget90)
 
 
 def test_material_library_never_repeats(tmp_path: Path) -> None:
@@ -378,6 +938,32 @@ def test_material_search_prioritizes_video(tmp_path: Path, monkeypatch: pytest.M
     monkeypatch.setattr(lib, "_pexels", _fake)
     lib.search("city", True)
     assert calls == ["video"]
+
+
+def test_pixabay_prefers_smallest_variant_that_clears_1080p() -> None:
+    """Pixabay daba siempre `large` (~50MB) y el tope de 48MB la descartaba.
+
+    Para un plano de 6-10s se elige la variante MÁS PEQUEÑA que aún dé 1080p.
+    """
+    from app import materials
+
+    full = {
+        "small": {"url": "s", "width": 1920, "height": 1080},
+        "medium": {"url": "m", "width": 1920, "height": 1080},
+        "large": {"url": "l", "width": 3840, "height": 2160},
+    }
+    assert materials._pick_video_variant(full)["url"] == "s"
+
+    # `small` por debajo de 1080 no sirve: se sube a la mayor disponible
+    too_small = {
+        "small": {"url": "s", "width": 960, "height": 540},
+        "large": {"url": "l", "width": 3840, "height": 2160},
+    }
+    assert materials._pick_video_variant(too_small)["url"] == "l"
+
+    # ninguna llega a 1080: mejor la mayor que quedarse sin b-roll
+    assert materials._pick_video_variant({"large": {"url": "l", "width": 1280, "height": 720}})["url"] == "l"
+    assert materials._pick_video_variant({}) is None
 
 
 def test_ai_generate_music_optional(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -69,6 +69,11 @@ async def _ensure_source(job, store: JobStore):
             await asyncio.to_thread(
                 ai_generate.generate_ai_video, meta, meta_path, source, tmp
             )
+        except ai_generate.ScriptGenerationError:
+            # Sin guion no hay video: antes caía a un guion determinístico que
+            # repetía el prompt y llenaba el clip de tarjetas de marca. Es mejor
+            # un job `failed` con el motivo que un `done` inservible.
+            raise
         except Exception as exc:  # noqa: BLE001
             logger.warning("ai_generate falló (%s); usando mock de ffmpeg", exc)
             prev = job.warning

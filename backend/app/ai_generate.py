@@ -8,13 +8,15 @@ Burns/paneo, fades, subtítulos lower-third con chip de keywords y música de fo
 opcional — vertical (Shorts/Reels/TikTok) u horizontal (YouTube video largo).
 
 Degradación en cascada (nunca queda mudo):
-- sin LLM → el prompt es el guion (keywords derivadas del texto);
 - sin TTS → el video sale sin voz (con música si se pidió);
 - sin b-roll → fotos de stock → material generado por IA (opcional) → Wikimedia
   → fondos de marca variados;
 - si el render por escenas falla → el render legacy de un solo fondo;
-- cada degradación se registra en `warnings` y viaja al job (no falla en silencio);
-- si todo falla → el pipeline cae al mock de ffmpeg.
+- cada degradación se registra en `warnings` y viaja al job (no falla en silencio).
+
+El guion NO tiene degradación: sin LLM el job falla con `ScriptGenerationError`.
+Un guion de respaldo determinístico era peor que un error — repetía el prompt
+hasta 36 veces y llenaba el video de tarjetas de marca sin contenido útil.
 """
 
 import asyncio
@@ -47,14 +49,37 @@ YOUTUBE_MIN_LONG = 360.0
 
 DEFAULT_VOICE = "es-MX-DaliaNeural"
 
-# ~2.6 palabras/segundo en español hablado medio
-WORD_RATE = 2.6
+# ~2.2 palabras/segundo en español hablado real (medido con edge-tts). El 2.6
+# anterior sobrestimaba el habla: un video de 15s salía de 18s porque el TTS
+# nunca se ajustaba a la duración pedida.
+WORD_RATE = 2.2
 
-# Una escena (oración + imagen) por ~40s de video, entre 4 y 20; tope de oraciones.
-SCENES_EVERY = 40.0
+# Palabras por escena. Medido contra gpt-oss-20b: se le piden 25 y escribe
+# ~13, así que pedir 25 dejaba los formatos largos mudos a mitad (467 palabras
+# para 360s). 14 equilibra las dos cosas: ~6s de plano por escena (ritmo normal
+# en narrado largo) y un guion que sí llena la duración pedida.
+WORDS_PER_SCENE = 14
+
+# Escenas por llamada al LLM en formatos largos. Un solo request por los ~2000
+# palabras de un video de 15 min no cabe en el presupuesto de tokens de Groq
+# (gpt-oss se come el presupuesto en razonamiento y devuelve content vacío).
+SCRIPT_BLOCK_SCENES = 8
+
+# Techo de búsqueda de b-roll por escena del cuerpo, medido en un render real
+# de 6 min: ~6s por escena entre la búsqueda (Pexels + Pixabay) y la descarga.
+_BROLL_SECONDS_PER_SCENE = 6.0
+
+# Una escena (oración + imagen) cada ~6-10s de video. El tope de 90 existe para
+# que el render y la búsqueda de b-roll sigan siendo manejables en 15 minutos
+# (88 búsquedas de stock en el peor caso) sin dejar planos de 15s.
 SCENES_MIN = 4
-SCENES_MAX = 20
-SCENES_MAX_SENTENCES = 36
+SCENES_MAX = 90
+SCENES_MAX_SENTENCES = 90
+
+# La tarjeta de título y la end card no se comen el video: capped a 3s cada una.
+CARD_SECONDS_MAX = 3.0
+CARD_SECONDS_MIN = 1.5
+CARD_DURATION_SHARE = 0.06
 
 _EDGE = "#1E3A8A"
 _MARK = "#FFC647"
@@ -73,10 +98,10 @@ _SCRIPT_SYSTEM = (
     "directos al grano, con un gancho fuerte al inicio y frases cortas pensadas "
     "para locución. NUNCA uses inglés ni emojis en el guion. "
     "REGLA CRÍTICA: el guion debe caber en la duración pedida "
-    "(≈2.6 palabras por segundo). "
+    "(≈2.2 palabras por segundo). "
     "Divide el guion en oraciones separadas por punto; cada oración será una "
-    "escena del video, así que frases breves, autónomas y fáciles de acompañar "
-    "con una imagen. "
+    "escena del video con UN SOLO b-roll, así que una idea por oración, frases "
+    "breves, autónomas y fáciles de acompañar con una imagen. "
     "Para cada oración produce además una 'query' visual en INGLÉS de 2 a 4 "
     "palabras (sustantivos concretos y filmables, sin nombres propios ni marcas, "
     "sin texto) para buscar b-roll de stock que ilustre esa escena. "
@@ -102,41 +127,102 @@ def _resolve_voice(voice: str | None) -> str:
 # ── LLM (guion) ─────────────────────────────────────────────
 
 
-def _complete(system: str, user: str, timeout: float = 60.0) -> str | None:
-    """Chat OpenAI-compatible reutilizando la config del repo.
+class ScriptGenerationError(RuntimeError):
+    """El LLM no entregó un guion utilizable. Falla el job en vez de inventar uno.
 
-    Prioridad al endpoint remoto documentado en AGENTS.md (hoy `gpt-oss-20b` vía
-    `EDGETAPE_LLM_BASE_URL` apuntando a Groq) y después a la clave Groq directa.
-    Sin credenciales devuelve None (el script cae al fallback heurístico).
-    Retry exponencial ante 429 (límites free: 30 RPM / 6K TPM).
+    Antes `write_script` caía a un guion determinístico que repetía el prompt
+    hasta 36 veces: el job terminaba `done` con 74% de gradientes de marca y
+    un b-roll buscado con palabras sin sentido. Ahora el error viaja al job.
     """
+
+
+# Modelo por defecto cuando solo hay `EDGETAPE_GROQ_API_KEY`. Debe ser un modelo
+# vigente: `gemma2-9b-it` fue dado de baja por Groq y devolvía 400.
+GROQ_SCRIPT_MODEL = os.environ.get("EDGETAPE_GROQ_MODEL", "openai/gpt-oss-20b")
+
+# Modelos que aceptan `reasoning_effort`. Fuera de esta lista el param puede
+# devolver 400, así que se reintenta sin él.
+_REASONING_MODELS = ("gpt-oss", "gpt-5", "o1", "o3", "o4", "deepseek-r1", "qwen3")
+
+_DEFAULT_MAX_TOKENS = 4096
+# Techo de salida por request. Los límites free de Groq (6K TPM) obligan a
+# pedir poco: por eso el guion largo va por bloques y no en un solo request.
+_MAX_TOKENS_CEILING = 2048
+
+
+def _llm_endpoint() -> tuple[str, str, dict[str, str]] | None:
+    """(url, modelo, headers) del LLM configurado, o None si no hay ninguno."""
     groq_key = os.environ.get("EDGETAPE_GROQ_API_KEY")
     llm_base = os.environ.get("EDGETAPE_LLM_BASE_URL")
     llm_model = os.environ.get("EDGETAPE_LLM_MODEL")
     llm_key = os.environ.get("EDGETAPE_LLM_API_KEY")
     if llm_base and llm_model:
-        url = f"{llm_base.rstrip('/')}/chat/completions"
-        model = llm_model
         headers = {"Content-Type": "application/json"}
         if llm_key:
             headers["Authorization"] = f"Bearer {llm_key}"
-    elif groq_key:
-        url = "https://api.groq.com/openai/v1/chat/completions"
-        model = os.environ.get("EDGETAPE_GROQ_MODEL") or "gemma2-9b-it"
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {groq_key}",
-        }
-    else:
-        return None
-    payload = {
+        return f"{llm_base.rstrip('/')}/chat/completions", llm_model, headers
+    if groq_key:
+        return (
+            "https://api.groq.com/openai/v1/chat/completions",
+            GROQ_SCRIPT_MODEL,
+            {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {groq_key}",
+            },
+        )
+    return None
+
+
+def _budget_tokens(max_tokens: int | None) -> int:
+    if max_tokens is None or max_tokens <= 0:
+        return _DEFAULT_MAX_TOKENS
+    return max(512, min(_MAX_TOKENS_CEILING, int(max_tokens)))
+
+
+def _complete(
+    system: str,
+    user: str,
+    timeout: float = 60.0,
+    max_tokens: int | None = None,
+) -> str:
+    """Chat OpenAI-compatible reutilizando la config del repo.
+
+    Prioridad al endpoint remoto documentado en AGENTS.md (hoy `gpt-oss-20b` vía
+    `EDGETAPE_LLM_BASE_URL` apuntando a Groq) y después a la clave Groq directa.
+
+    Detalles que importan con modelos de razonamiento (gpt-oss):
+    - manda `max_completion_tokens` explícito; el default de Groq (2048) lo
+      consume íntegro el razonamiento y la respuesta llega con `content=""`.
+    - manda `reasoning_effort="low"`; en `high` llegó a gastar 15.626 tokens.
+    - trata `content` vacío o `finish_reason != "stop"` como ERROR. Antes
+      devolvía `""` y el caller lo tomaba por un guion vacío.
+    - un 400 (modelo dado de baja o param no soportado) no se reintenta.
+    - 429 sí, con backoff exponencial (límites free: 30 RPM / 6K TPM).
+
+    Levanta `ScriptGenerationError` si no hay credenciales o si el LLM no
+    entrega contenido.
+    """
+    endpoint = _llm_endpoint()
+    if endpoint is None:
+        raise ScriptGenerationError(
+            "no hay LLM configurado: define EDGETAPE_LLM_BASE_URL + EDGETAPE_LLM_MODEL "
+            "(o EDGETAPE_GROQ_API_KEY) para escribir el guion"
+        )
+    url, model, headers = endpoint
+    wants_reasoning = any(tag in model.lower() for tag in _REASONING_MODELS)
+    payload: dict = {
         "model": model,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
         "temperature": 0.7,
+        "max_completion_tokens": _budget_tokens(max_tokens),
     }
+    if wants_reasoning:
+        payload["reasoning_effort"] = "low"
+
+    last_error = "respuesta vacía"
     with httpx.Client(timeout=timeout) as client:
         for attempt in range(5):
             resp = client.post(url, json=payload, headers=headers)
@@ -145,13 +231,52 @@ def _complete(system: str, user: str, timeout: float = 60.0) -> str | None:
                 logger.warning("LLM 429 en guion — retry %d en %.1fs", attempt + 1, wait)
                 time.sleep(wait)
                 continue
-            resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
-    return None
+            if resp.status_code == 400 and "reasoning_effort" in payload:
+                # endpoint OpenAI-compatible que no conoce el param: sin reintentar
+                logger.info("el endpoint no acepta reasoning_effort; reintentando sin él")
+                payload.pop("reasoning_effort")
+                continue
+            if resp.status_code >= 400:
+                raise ScriptGenerationError(
+                    f"el LLM respondió {resp.status_code}: {resp.text[:200]}"
+                )
+            data = resp.json()
+            choice = (data.get("choices") or [{}])[0]
+            content = (choice.get("message") or {}).get("content") or ""
+            finish = choice.get("finish_reason")
+            if content.strip():
+                if finish == "length":
+                    logger.warning(
+                        "el LLM cortó la respuesta por presupuesto de tokens "
+                        "(%d pedidos)", payload["max_completion_tokens"],
+                    )
+                return content
+            last_error = f"finish_reason={finish!r}, content vacío"
+            if finish == "length":
+                # se agotó el presupuesto pensando: reintenta con el máximo
+                if payload["max_completion_tokens"] < _MAX_TOKENS_CEILING:
+                    payload["max_completion_tokens"] = _MAX_TOKENS_CEILING
+                    last_error = "respuesta vacía por presupuesto de tokens"
+                    continue
+            break
+    raise ScriptGenerationError(f"el LLM no devolvió guion ({last_error})")
 
 
 def _scene_count(duration: float) -> int:
-    return max(SCENES_MIN, min(SCENES_MAX, round(duration / SCENES_EVERY)))
+    """Una escena cada ~WORDS_PER_SCENE palabras, acotada por el rango estable.
+
+    Antes se dividía la duración entre 40s fijos, lo que para 360s daba 9 escenas
+    de ~90 palabras cada una — imposible de ilustrar. Ahora una escena ≈ una
+    idea, que es lo que necesita un b-roll.
+    """
+    words = max(40, int(duration * WORD_RATE))
+    return max(SCENES_MIN, min(SCENES_MAX, round(words / WORDS_PER_SCENE)))
+
+
+def _scene_blocks(nscenes: int) -> list[tuple[int, int]]:
+    """Reparte las escenas en bloques de `SCRIPT_BLOCK_SCENES` para el LLM."""
+    step = max(1, SCRIPT_BLOCK_SCENES)
+    return [(i, min(i + step, nscenes)) for i in range(0, nscenes, step)]
 
 
 _SCRIPT_PROMPT = (
@@ -162,24 +287,120 @@ _SCRIPT_PROMPT = (
     "Instrucciones:\n"
     "1. Guion narrado en español de ≈{words} palabras, dividido en {nscenes} "
     "oraciones cortas para locución (una oración = una escena).\n"
-    "2. Arranca con un gancho que enganche en los primeros 2 segundos.\n"
-    "3. Termina con un cierre o call-to-action breve.\n"
-    "4. Sin emojis, sin rótulos, solo el texto que se va a narrar.\n"
-    "5. Devuelve 'queries': una keyword visual EN INGLÉS (2-4 palabras, "
-    "concreta y filmable) por cada oración, en el MISMO orden.\n\n"
+    "2. Cada oración trata UNA sola idea y debe tener entre {wlo} y {whi} "
+    "palabras. Es obligatorio: si te quedas corto, el video se queda mudo.\n"
+    "3. Arranca con un gancho que enganche en los primeros 2 segundos.\n"
+    "4. Termina con un cierre o call-to-action breve.\n"
+    "5. Sin emojis, sin rótulos, solo el texto que se va a narrar.\n"
+    "6. Devuelve 'queries': exactamente UNA keyword visual EN INGLÉS "
+    "(2-4 palabras, concreta y filmable) por oración, en el MISMO orden y con "
+    "la misma cantidad de elementos que oraciones.\n\n"
     "Responde SOLO con JSON:\n"
     '{{"title": "<título efectivo y concreto>", "hook": "<gancho máx 60 caracteres>", '
     '"script": "<oración. Oración. Oración.>", "tags": ["tag1", "tag2"], '
     '"queries": ["city skyline", "happy family", "..."]}}'
 )
 
+# Los bloques 2..N sólo llevan escenas: el título, el gancho y los tags ya salen
+# del primero. `prev` evita que el modelo repita lo que ya escribió.
+_SCRIPT_BLOCK_PROMPT = (
+    "Plataforma objetivo: {platform}\n"
+    "Estilo: {style}\n"
+    "Tema: {prompt}\n\n"
+    "Continuación del guion: estás escribiendo las escenas {first}-{last} "
+    "de {nscenes} (bloque {block} de {nblocks}), en español.\n\n"
+    "{prev}\n\n"
+    "Instrucciones:\n"
+    "1. Escribe EXACTAMENTE {count} oraciones nuevas, de entre {wlo} y {whi} "
+    "palabras cada una (una idea por oración). Es obligatorio: si te quedas "
+    "corto, el video se queda mudo en el medio.\n"
+    "2. No repitas ni reformules lo ya escrito ni lo de los bloques anteriores.\n"
+    "3. La última escena del bloque debe dejar el hilo abierto para continuar.\n"
+    "4. Sin emojis, sin rótulos.\n"
+    "5. 'queries': exactamente UNA keyword visual EN INGLÉS (2-4 palabras, "
+    "concreta y filmable) por oración, en el MISMO orden y con la misma cantidad "
+    "de elementos que oraciones.\n\n"
+    "Responde SOLO con JSON:\n"
+    '{{"script": "<oración. Oración.>", "queries": ["city skyline", "..."]}}'
+)
+
+# Reintento cuando el bloque viene corto: sin esto el guion de 6 min salía con
+# 467 palabras (212s de narración) y el video se quedaba mudo 148s.
+_SHORT_BLOCK_RATIO = 0.65
+_SHORT_BLOCK_RETRY = (
+    "\n\nAVISO: tu respuesta anterior fue demasiado corta para el slot de tiempo "
+    "de este bloque. Necesito ≈{words} palabras en total ({lo}-{hi} palabras "
+    "por oración). Vuelve a escribir el bloque completo, sin acortar y sin "
+    "resumir."
+)
+
+
+def _escape_inner_quotes(text: str) -> str:
+    """Repara los dos errores de formato más comunes del LLM al emitir JSON.
+
+    1. Comillas dobles sueltas dentro de un valor (`"dijo \\"hola\\""`): una
+       comilla cierra el valor solo si —ignorando espacios— le sigue `,`, `}`,
+       `]` o `:`; en cualquier otro caso es interior y va escapada.
+    2. Saltos de línea y tabs crudos dentro del valor, que `json.loads` rechaza
+       como caracteres de control.
+    """
+    out: list[str] = []
+    i, n = 0, len(text)
+    in_str = False
+    while i < n:
+        ch = text[i]
+        if in_str and ch == "\\":
+            out.append(text[i:i + 2])
+            i += 2
+            continue
+        if ch == '"':
+            if not in_str:
+                in_str = True
+                out.append(ch)
+                i += 1
+                continue
+            # la comilla cierra el valor si el siguiente carácter (ignorando
+            # espacios) es `,`, `}`, `]` o `:`; si no, es una comilla interior
+            rest = text[i + 1:].lstrip()
+            if rest and rest[0] in ",}]:":
+                in_str = False
+                out.append(ch)
+            else:
+                out.append('\\"')
+            i += 1
+            continue
+        if in_str and ch == "\n":
+            out.append("\\n")
+            i += 1
+            continue
+        if in_str and ch == "\t":
+            out.append("\\t")
+            i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _loads_lenient(blob: str) -> dict:
+    """`json.loads` tolerante a los errores de formato del LLM."""
+    try:
+        return json.loads(blob)
+    except json.JSONDecodeError:
+        pass
+    repaired = _escape_inner_quotes(blob)
+    repaired = re.sub(r",\s*([}\]])", r"\1", repaired)
+    return json.loads(repaired)
+
 
 def _parse_script_json(content: str) -> dict:
-    cleaned = re.sub(r"```[\s\S]*?```", "", content).strip()
+    # quitar solo los delimitadores ``` (con su lenguaje); el regex anterior
+    # `re.sub(r"```[\s\S]*?```", ...)` se comía el JSON completo
+    cleaned = re.sub(r"^[ \t]*```[a-zA-Z0-9_-]*[ \t]*$", "", content, flags=re.MULTILINE).strip()
     match = re.search(r"\{[\s\S]*\}", cleaned)
     if not match:
         raise ValueError("no JSON object found in LLM response")
-    data = json.loads(match.group(0))
+    data = _loads_lenient(match.group(0))
     if not isinstance(data, dict):
         raise ValueError("LLM response is not a JSON object")
     script = str(data.get("script", "")).strip()
@@ -201,126 +422,245 @@ def _parse_script_json(content: str) -> dict:
 
 def _script_sentences(script: str) -> list[str]:
     parts = re.split(r"(?<=[.!?¿¡])\s+|(?<=[.!?¿¡])(?=\"|\')", script)
-    sentences = [p.strip() for p in parts if p.strip()]
-    return sentences[:SCENES_MAX_SENTENCES]
-
-
-def _topic_phrase(prompt: str) -> str:
-    cleaned = " ".join(prompt.split())
-    for pat in (r"titulado\s*[:“\"']?\s*([^“\"'\n.]+)\s*[”\"']?",
-                r"título\s*[:“\"']?\s*([^“\"'\n.]+)\s*[”\"']?",
-                r"titulada\s*[:“\"']?\s*([^“\"'\n.]+)\s*[”\"']?",
-                r"sobre\s+([^,.\n;]+)"):
-        m = re.search(pat, cleaned, re.IGNORECASE)
-        if m and m.group(1).strip():
-            return m.group(1).strip()
-    return cleaned[:90] or "un tema"
-
-
-def _fallback_script(prompt: str, duration: float) -> dict:
-    """Guion determinístico de respaldo. Cuando el LLM no está disponible hay que
-    cubrir la duración completa (p. ej. 6-15 min de YouTube), así que expande el
-    prompt a ≈ WORD_RATE palabras por segundo y extrae un título decente."""
-    topic = _topic_phrase(prompt)
-    target_words = max(24, int(duration * WORD_RATE))
-    sentences: list[str] = []
-    sentences.append(
-        f"¿Sabés qué hace tan especial a {topic}? Hoy te lo cuento de punta a punta."[:160]
-    )
-    parts = [
-        "Para entender bien la historia hay que mirar el origen: {t} es mucho más que lo que parece a simple vista.",
-        "Lo primero que marca la diferencia son los detalles que casi nadie nota, y en {t} hay muchísimos.",
-        "Con el correr de los años, {t} fue ganando protagonismo hasta convertirse en un tema del que todos hablan.",
-        "Hay momentos que quedaron grabados en la memoria colectiva, y {t} tiene varios de esos momentos.",
-        "Hablemos de datos concretos: lo que pasó en {t} cambió la forma de ver las cosas.",
-        "A veces conviene frenar un segundo y preguntarse por qué {t} resonó tanto entre la gente.",
-        "Los protagonistas de {t} no lo hicieron solos: detrás hubo decisiones, esfuerzo y mucha constancia.",
-        "Es difícil resumir todo lo que representa {t}, pero vale la pena intentarlo.",
-        "Cada tanto aparece una historia que redefine lo que creíamos saber sobre {t}.",
-        "Y ese es justamente el punto: {t} demuestra que lo importante no es la fama, sino el impacto real.",
+    # una "escena" de una o dos palabras es un fragmento que ffmpeg muestra 1,2s
+    sentences = [
+        p.strip() for p in parts
+        if p.strip() and _word_count(p.strip()) >= 3
     ]
-    idx = 0
-    while _word_count(sentences) < target_words and len(sentences) < SCENES_MAX_SENTENCES - 1:
-        sentences.append(parts[idx % len(parts)].format(t=topic))
-        idx += 1
-    sentences.append(
-        f"Así que ya sabés: si querés entender {topic}, mirá los detalles y dejate llevar por la historia."
-    )
-    script = " ".join(sentences)
-    title = _topic_phrase(prompt)
-    queries = [_scene_query(s) or topic[:40] for s in sentences]
-    return {
-        "title": title[:100],
-        "hook": sentences[0][:70],
-        "script": script,
-        "sentences": _script_sentences(script),
-        "tags": ["video", "generado", "contenido", "ia"],
-        "queries": queries,
-    }
+    return sentences[:SCENES_MAX_SENTENCES]
 
 
 def _word_count(text: str) -> int:
     return len(str(text).split())
 
 
-def write_script(prompt: str, duration: float, style: str, platform: str) -> dict:
-    """Guion LLM para el prompt; fallback determinístico si no hay clave o falla."""
-    platform_names = {
-        "youtube_shorts": "YouTube Shorts",
-        "youtube": "YouTube (video largo)",
-        "tiktok": "TikTok",
-        "facebook_reels": "Facebook Reels",
-        "instagram_reels": "Instagram Reels",
-    }
-    pname = platform_names.get(platform, platform)
-    words = max(10, int(duration * WORD_RATE))
-    nscenes = _scene_count(duration)
-    try:
-        content = _complete(
-            _SCRIPT_SYSTEM,
-            _SCRIPT_PROMPT.format(
-                platform=pname, duration=duration, style=style or "professional",
-                prompt=prompt, words=words, nscenes=nscenes,
-            ),
-        )
-        if content:
-            info = _parse_script_json(content)
-            info["sentences"] = _script_sentences(info["script"])
-            logger.info(
-                "script generado por LLM: %d palabras, %d escenas (%s)",
-                len(info["script"].split()), len(info["sentences"]), info["title"][:60],
-            )
-            return info
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("guion LLM FAILED (%s); usando fallback determinístico", exc)
+_PLATFORM_NAMES = {
+    "youtube_shorts": "YouTube Shorts",
+    "youtube": "YouTube (video largo)",
+    "tiktok": "TikTok",
+    "facebook_reels": "Facebook Reels",
+    "instagram_reels": "Instagram Reels",
+}
 
-    pb = _fallback_script(prompt, duration)
+
+def _block_budget(words: int) -> int:
+    """Tokens de salida para un bloque. ~1.6 tokens/palabra en español + margen."""
+    return int(words * 1.6) + 256
+
+
+def _word_range(scene_words: int) -> tuple[int, int]:
+    """Rango de palabras por oración que se le pide al LLM."""
+    return max(12, int(scene_words * 0.7)), max(20, int(scene_words * 1.3))
+
+
+def _ask_block(
+    prompt: str, style: str, pname: str, nscenes: int, span: tuple[int, int],
+    block_index: int, nblocks: int, words: int, total_words: int,
+    scene_words: int, prev_sentences: list[str], prev_queries: list[str],
+) -> tuple[dict, list[str], list[str]]:
+    """Pide un bloque de escenas al LLM. Devuelve (metadata, oraciones, queries).
+
+    Solo el primer bloque trae metadata (título, gancho, tags) y conoce el
+    total del guion; los demás escriben su tramo a ciegas con el contexto de las
+    últimas oraciones. Cada bloque se pide por separado: un fallo a la escena
+    30 de 40 no tira el guion entero.
+
+    Si el bloque vuelve corto (el modelo se queda en ~11 palabras por oración
+    cuando se le piden 25) se reintenta una vez con el aviso explícito, porque un
+    guion corto deja el video en silencio a partir de la mitad.
+    """
+    first, last = span
+    count = last - first
+    wlo, whi = _word_range(scene_words)
+    if block_index == 0:
+        head = (
+            f"Este guion tiene {nscenes} escenas en total. Escribe SOLO las "
+            f"primeras {count} ahora (≈{words} palabras); los bloques siguientes "
+            f"escribirán el resto.\n\n"
+            if nblocks > 1 else ""
+        )
+        base = head + _SCRIPT_PROMPT.format(
+            platform=pname, duration=total_words / WORD_RATE,
+            style=style or "professional", prompt=prompt,
+            words=words, nscenes=nscenes, wlo=wlo, whi=whi,
+        )
+    else:
+        tail = prev_sentences[-3:] if prev_sentences else []
+        context = ("Lo último que escribiste: " + " ".join(tail)) if tail else ""
+        if prev_queries:
+            context += "\nQueries ya usadas (no las repitas): " + ", ".join(prev_queries[-6:])
+        base = _SCRIPT_BLOCK_PROMPT.format(
+            platform=pname, style=style or "professional", prompt=prompt,
+            first=first + 1, last=last, nscenes=nscenes, block=block_index + 1,
+            nblocks=nblocks, count=count, wlo=wlo, whi=whi,
+            prev=context or "(empiezas el guion)",
+        )
+
+    parsed: dict | None = None
+    sentences: list[str] = []
+    for attempt in range(2):
+        user = base if attempt == 0 else base + _SHORT_BLOCK_RETRY.format(
+            words=words, lo=wlo, hi=whi,
+        )
+        try:
+            content = _complete(
+                _SCRIPT_SYSTEM, user, timeout=90.0, max_tokens=_block_budget(words),
+            )
+            candidate = _parse_script_json(content)
+        except ValueError as exc:
+            # JSON malformado: es un fallo de formato, no de contenido. Con un
+            # guion de 8 bloques, tirar los 7 buenos por este vale demasiado.
+            if attempt == 0:
+                logger.warning(
+                    "bloque %d/%d con formato inválido (%s); reintentando",
+                    block_index + 1, nblocks, exc,
+                )
+                continue
+            raise ScriptGenerationError(
+                f"bloque {block_index + 1}/{nblocks} de escenas ilegible: {exc}"
+            ) from exc
+        got_sentences = _script_sentences(candidate["script"])
+        if not got_sentences:
+            raise ScriptGenerationError("el bloque de escenas llegó vacío")
+        parsed, sentences = candidate, got_sentences
+        got = _word_count(candidate["script"])
+        if got >= words * _SHORT_BLOCK_RATIO:
+            break
+        if attempt == 0:
+            logger.info(
+                "bloque %d/%d corto: %d palabras de ~%d pedidas; reintentando",
+                block_index + 1, nblocks, got, words,
+            )
+        else:
+            logger.warning(
+                "bloque %d/%d sigue corto tras el reintento: %d de ~%d palabras",
+                block_index + 1, nblocks, got, words,
+            )
+
+    # Las queries van por posición: si el modelo devuelve menos que oraciones
+    # las últimas se quedan sin b-roll, así que se rellenan vacías (la escena
+    # cae a la capa siguiente) en vez de desalinear todo el guion.
+    queries = [str(q).strip()[:60] for q in (parsed.get("queries") or [])][: len(sentences)]
+    queries += [""] * (len(sentences) - len(queries))
+    meta = (
+        {"title": parsed.get("title", ""), "hook": parsed.get("hook", ""),
+         "tags": parsed.get("tags", [])}
+        if block_index == 0 else {}
+    )
+    return meta, sentences, queries
+
+
+def write_script(prompt: str, duration: float, style: str, platform: str) -> dict:
+    """Guion del LLM para el prompt, por bloques de escenas.
+
+    Un request único no sirve para formatos largos: los ~2000 palabras de un
+    video de 15 min superan el presupuesto de Groq, y el modelo de razonamiento
+    lo consume en `reasoning` y devuelve `content=""`. Por eso el guion se pide
+    en bloques de `SCRIPT_BLOCK_SCENES` y se concatena.
+
+    Sin LLM, o si algún bloque no entrega escenas, levanta
+    `ScriptGenerationError` y el job falla: es preferible a un job `done` con
+    un guion repetido y 74% de gradientes de marca.
+    """
+    pname = _PLATFORM_NAMES.get(platform, platform)
+    total_words = max(10, int(duration * WORD_RATE))
+    nscenes = _scene_count(duration)
+    scene_words = max(12, round(total_words / nscenes))
+    spans = _scene_blocks(nscenes)
+    nblocks = len(spans)
+
+    sentences: list[str] = []
+    queries: list[str] = []
+    meta: dict = {}
+    for i, span in enumerate(spans):
+        block_words = scene_words * (span[1] - span[0])
+        try:
+            got_meta, got_sentences, got_queries = _ask_block(
+                prompt, style, pname, nscenes, span, i, nblocks,
+                block_words, total_words, scene_words, sentences, queries,
+            )
+        except ScriptGenerationError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise ScriptGenerationError(
+                f"bloque {i + 1}/{nblocks} de escenas ilegible: {exc}"
+            ) from exc
+        if i == 0:
+            meta = got_meta
+        sentences.extend(got_sentences)
+        queries.extend(got_queries)
+
+    if not sentences:
+        raise ScriptGenerationError("el LLM no devolvió ninguna escena")
+
+    script = " ".join(sentences)
+    got_words = _word_count(script)
+    # `sentences` se trunca a SCENES_MAX_SENTENCES: las queries se recortan al
+    # MISMO tamaño, si no la última escena se queda con la query de otra.
+    sentences = sentences[:SCENES_MAX_SENTENCES]
+    queries = queries[: len(sentences)]
+    logger.info(
+        "script en %d bloque(s): %d palabras, %d escenas (pedidas %d)",
+        nblocks, got_words, len(sentences), total_words,
+    )
     return {
-        "title": pb["title"] or "Momento clave",
-        "hook": pb["hook"],
-        "script": pb["script"],
-        "sentences": pb["sentences"],
-        "tags": ["video", "generado", "contenido", "ia"],
-        "queries": pb.get("queries", []),
+        "title": (meta.get("title") or "").strip()[:100] or prompt[:100],
+        "hook": (meta.get("hook") or "").strip()[:70] or sentences[0][:70],
+        "script": script,
+        "sentences": sentences,
+        "tags": [str(t).lower().strip() for t in (meta.get("tags") or [])][:15],
+        "queries": queries,
+        "target_words": total_words,
+        "spoken_seconds": got_words / WORD_RATE,
     }
 
 
 # ── TTS (voz) ───────────────────────────────────────────────
 
 
-def _pad_audio(audio: str, total: float, out: Path) -> str | None:
-    """Estira el audio con silencio hasta `total` segundos (apad)."""
+def _fit_audio(audio: str, target: float, out: Path) -> str | None:
+    """Ajusta la locución a `target` segundos sin cortar palabras.
+
+    Antes el video se estiraba a la duración real del TTS (`max(duration,
+    audio_dur)`), así que un video de 15s salía de 18s y el de 360s podía
+    perder el final de la narración. Ahora el audio se comprime con
+    `atempo` (no altera el pitch) y se recorta al final como último recurso.
+    """
+    try:
+        dur = probe_duration(audio)
+    except Exception:  # noqa: BLE001
+        return None
+    if dur <= 0.5 or target <= 0.5:
+        return None
+    ratio = dur / target
+    if ratio > 1.02:
+        # audio más largo que el slot: acelerar (atempo admite 0.5-2.0 por
+        # instancia, encadenado para ratios mayores)
+        chain = []
+        left = ratio
+        while left > 2.0 and len(chain) < 4:
+            chain.append("atempo=2.0")
+            left /= 2.0
+        chain.append(f"atempo={min(2.0, left):.4f}")
+        af = f"aresample=48000,{','.join(chain)}"
+        logger.info("locución %.1fs → %.1fs (acelerada x%.2f)", dur, target, ratio)
+    elif ratio < 0.98:
+        # audio más corto: rellenar con silencio hasta el final del video
+        af = "aresample=48000,apad"
+        logger.info("locución %.1fs → %.1fs (rellenada con silencio)", dur, target)
+    else:
+        return audio
     try:
         cmd = [
             FFMPEG, "-y", "-hide_banner", "-loglevel", "error",
-            "-i", audio, "-af", "aresample=48000,apad",
-            "-t", f"{total:.3f}", "-c:a", "aac", "-b:a", "128k", "-f", "mp4", str(out),
+            "-i", audio, "-af", af, "-t", f"{target:.3f}",
+            "-c:a", "aac", "-b:a", "128k", "-f", "mp4", str(out),
         ]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if r.returncode == 0 and out.exists() and out.stat().st_size > 0:
             return str(out)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("no se pudo ajustar la locución a %.1fs: %s", target, exc)
     return None
 
 
@@ -596,6 +936,79 @@ def _scene_query(text: str, limit: int = 3) -> str:
     return " ".join(w[:18] for w in words[:limit])
 
 
+# Conectores y palabras que delatan una query en español: Pexels y Pixabay
+# buscan en inglés, así que "saber hacer especial" no devuelve nada y la escena
+# se queda con un gradiente de marca. Mejor un gradiente que un clip que no
+# ilustra. No se filtran nombres propios: distinguirlos de un title case legítimo
+# ("City Skyline at Night") daba más falsos positivos que aciertos.
+_ES_QUERY_MARKERS = frozenset({
+    # conectores y verbos
+    "que", "para", "como", "porque", "sabes", "puedes", "puede", "quieres",
+    "haces", "mira", "entender", "tienes", "nunca", "siempre", "cada",
+    "hace", "poder", "quiere", "saber", "decir", "dices", "sirve", "saben",
+    "cosas", "gente", "tambien", "asi", "mas", "muy", "entonces", "luego",
+    "ahora", "hoy", "aqui", "pasos", "mismo", "momento", "ejemplo", "forma",
+    "formas", "manera", "parte", "partes", "vez", "veces", "solo", "mejor",
+    "peor", "grande", "pequeno", "anos", "millon", "millones",
+    # sustantivos que el LLM escribe en español cuando se le escapa
+    "panaderia", "peluqueria", "restaurante", "cafeteria", "supermercado",
+    "farmacia", "gimnasio", "escuela", "hospital", "aula", "escritorio",
+    "computadora", "celular", "personas", "historia", "ciudad", "pais",
+    "videos", "cosas", "mundo", "temas", "tema", "ejemplos",
+    # adjetivos
+    "hermoso", "hermosa", "bonito", "bonita", "joven", "viejo", "rapido",
+    "lento", "feliz", "triste", "calido", "frio", "grande", " pequeno",
+})
+
+# Stopwords en inglés: no ilustran nada en un buscador de stock.
+_EN_STOPWORDS = frozenset({
+    "the", "and", "for", "with", "that", "this", "from", "into", "you",
+    "are", "was", "were", "his", "her", "its", "our", "their", "have",
+    "has", "had", "not", "but", "can", "will", "your", "they", "them",
+    "some", "than", "then", "when", "what", "which", "who", "how", "all",
+})
+
+
+# Gerundio español: la fuga más común cuando el LLM se le escapa el idioma y
+# describe en vez de nombrar ("corriendo", "entendiendo"). El inglés
+# prácticamente no termina así, así que la morfología cubre lo que una lista
+# de palabras nunca alcanza.
+_ES_GERUND_SUFFIXES = ("ando", "iendo", "ando,", "iendo,")
+
+
+def is_usable_query(query: str) -> bool:
+    """True si la query del LLM sirve para buscar b-roll en inglés.
+
+    Rechaza stemmed keywords del guion en español: antes se enviaban tal cual a
+    Pexels (`q=entender+historia+mirar`) y devolvían material que no ilustraba
+    la escena. Tres filtros, de más barato a más caro:
+    1. gerundio español (`-ando`/`-iendo`), por morfología;
+    2. conectores/nouns en español de la lista;
+    3. palabras tool función del inglés sin contenido visual.
+
+    Solo se filtran aquí las queries del LLM; las de respaldo (_scene_query) se
+    siguen usando para Wikimedia.
+    """
+    q = " ".join(str(query or "").split())
+    if len(q) < 3:
+        return False
+    if not q.isascii():
+        return False  # acentos o ñ: no es una query en inglés
+    raw = [w for w in re.findall(r"[A-Za-z]+", q) if len(w) > 2]
+    if not raw:
+        return False
+    lowered = [w.lower() for w in raw]
+    if any(w.endswith(_ES_GERUND_SUFFIXES) for w in lowered):
+        return False
+    bad = _ES_QUERY_MARKERS | _EN_STOPWORDS
+    # Los stopwords solo cuentan si van en minúsculas: en "Sunrise Over The
+    # Beach" el "The" es parte de un title case legítimo.
+    return not any(
+        w in bad and not original[:1].isupper()
+        for w, original in zip(lowered, raw)
+    )
+
+
 def _pick_image_info(pages: dict, want_landscape: bool) -> str | None:
     for page in pages.values():
         ii = (page.get("imageinfo") or [None])[0]
@@ -723,19 +1136,29 @@ def _try_videogen(
 
 def _fetch_scene_media(
     sentences: list[str], queries: list[str] | None, size: tuple[int, int], tmp: Path,
-    max_total: float = 90.0, per_request: float = 12.0,
+    max_total: float | None = None, per_request: float = 12.0,
 ) -> list[tuple[Path | None, bool]]:
     """Material por escena: b-roll real de stock (video > foto) y respaldo Wikimedia.
 
     Devuelve (ruta, es_video) por oración; la ruta va SIN extensión (se re-probea).
     Nunca lanza: sin red/claves deja escenas en None para usar fondos de marca.
+    Las queries del LLM se validan con `is_usable_query`: una query en español
+    no se envía a Pexels/Pixabay (no devuelven nada útil) y la escena cae a las
+    capas siguientes en vez de gastar presupuesto en una búsqueda inútil.
     """
     n = len(sentences)
     if os.environ.get("EDGETAPE_AI_IMAGES", "1") == "0" or n <= 1:
         return [(None, False)] * n
+    if max_total is None:
+        # MEDIDO: cada escena cuesta ~6s (búsqueda en Pexels + Pixabay y descarga
+        # del asset). Con el estimate viejo de 2,5s el techo se agotaba en la
+        # escena 22 de 57 y las 35 restantes salían en gradiente de marca.
+        # 6s x 88 escenas = 528s, acotado a 540s (el peor caso es un video de 15 min).
+        max_total = max(45.0, min(540.0, (n - 2) * _BROLL_SECONDS_PER_SCENE))
     want_landscape = size[0] >= size[1]
     assets: list[tuple[Path | None, bool]] = [(None, False)] * n
     library = materials.build_library()
+    rejected = 0
 
     with httpx.Client(timeout=per_request, headers={"User-Agent": _UA}) as client:
         deadline = time.monotonic() + max_total
@@ -744,10 +1167,15 @@ def _fetch_scene_media(
                 if time.monotonic() > deadline:
                     logger.warning("tiempo de búsqueda de b-roll agotado en la escena %d", i)
                     break
-                q = (
-                    (queries[i] if queries and i < len(queries) else "")
-                    or _scene_query(sentences[i])
-                )
+                raw_q = queries[i] if queries and i < len(queries) else ""
+                if raw_q and not is_usable_query(raw_q):
+                    rejected += 1
+                    logger.info(
+                        "escena %d: query descartada (no es una keyword en inglés): %r",
+                        i, raw_q[:50],
+                    )
+                    continue
+                q = raw_q or _scene_query(sentences[i])
                 if not q:
                     continue
                 pick = library.take(library.search(q, want_landscape, client=client))
@@ -757,6 +1185,12 @@ def _fetch_scene_media(
                 if materials.download(client, pick, dest):
                     assets[i] = (dest, pick.kind == "video")
                     logger.info("escena %d: %s %s · %s", i, pick.provider, pick.kind, q)
+
+        if rejected:
+            logger.warning(
+                "%d de %d queries del LLM no eran filmables en inglés "
+                "(se usaron fondos de marca en esas escenas)", rejected, max(0, n - 2),
+            )
 
         pending = [
             i for i in range(n)
@@ -1020,15 +1454,42 @@ def _render_captions(
     return paths
 
 
-def _sentence_timings(sentences: list[str], total: float) -> tuple[list[float], list[float]]:
-    weights = [max(1.0, float(len(s.split()))) for s in sentences]
-    if len(sentences) == 1:
+def _sentence_timings(
+    sentences: list[str], total: float, head: float | None = None, tail: float | None = None,
+) -> tuple[list[float], list[float]]:
+    """Reparte `total` entre las escenas, proporcionalmente a sus palabras.
+
+    `head`/`tail` fijan en segundos la tarjeta de título y la end card, para que
+    no se coman el video: en un corto de 15s las dos se llevaban 7,5 de los 18s
+    y el cuerpo quedaba sin tiempo. El resto se reparte entre las escenas de
+    cuerpo. Sin `head`/`tail` (o con menos de 3 escenas) reparte todo igual.
+    """
+    n = len(sentences)
+    if n <= 1:
         return [0.0], [total]
-    scale = total / sum(weights)
-    segs = [max(1.2, w * scale) for w in weights]
-    s = sum(segs)
-    if s > total:
-        segs = [x * total / s for x in segs]
+    head = float(head or 0.0)
+    tail = float(tail or 0.0)
+    if n >= 3 and head > 0 and tail > 0 and head + tail < total * 0.5:
+        body = list(range(1, n - 1))
+        weights = [max(1.0, float(len(sentences[i].split()))) for i in body]
+        budget = total - head - tail
+        scale = budget / sum(weights)
+        segs = [max(1.2, w * scale) for w in weights]
+        over = sum(segs) - budget
+        for i in range(len(segs) - 1, -1, -1):
+            if over <= 1e-6:
+                break
+            take = min(over, segs[i] - 1.2)
+            segs[i] -= take
+            over -= take
+        segs = [head] + segs + [tail]
+    else:
+        weights = [max(1.0, float(len(s.split()))) for s in sentences]
+        scale = total / sum(weights)
+        segs = [max(1.2, w * scale) for w in weights]
+        s = sum(segs)
+        if s > total:
+            segs = [x * total / s for x in segs]
     starts: list[float] = []
     ends: list[float] = []
     cur = 0.0
@@ -1037,6 +1498,11 @@ def _sentence_timings(sentences: list[str], total: float) -> tuple[list[float], 
         cur += seg
         ends.append(cur if j < len(segs) - 1 else total)
     return starts, ends
+
+
+def _card_seconds(duration: float) -> float:
+    """Duración de la tarjeta de título y de la end card: 1,5s a 3s."""
+    return min(CARD_SECONDS_MAX, max(CARD_SECONDS_MIN, duration * CARD_DURATION_SHARE))
 
 
 # ── Música de fondo (opcional) ───────────────────────────────
@@ -1136,6 +1602,15 @@ def generate_ai_video(meta: dict, meta_path: Path | None, source: str | Path, tm
     logger.info("guion para IA (%.0fs): %d caracteres, %d escenas",
                 duration, len(script_text), len(script_info["sentences"]))
 
+    warnings: list[str] = []
+    # Un guion corto deja el video en silencio al final: la duración pedida manda
+    # pero el aviso viaja al job (no se estira el TTS para disimularlo).
+    spoken = float(script_info.get("spoken_seconds") or 0.0)
+    if spoken and spoken < duration * 0.7:
+        warnings.append(
+            f"el guion cubre {spoken:.0f}s de los {duration:.0f}s pedidos: "
+            f"el final del video queda sin narración"
+        )
     audio = None
     audio_path = tmp / "voice.mp3"
     try:
@@ -1144,29 +1619,36 @@ def generate_ai_video(meta: dict, meta_path: Path | None, source: str | Path, tm
         logger.warning("TTS inesperado: %s", exc)
         audio = None
 
-    audio_dur = 0.0
+    # La duración pedida manda: si la locución se pasa, se acelera con atempo
+    # en vez de estirar el video (un corto de 15s salía de 18s).
+    total = duration
     if audio:
-        try:
-            audio_dur = probe_duration(audio)
-        except Exception:  # noqa: BLE001
-            audio_dur = 0.0
-    total = max(duration, audio_dur)
-    if total <= 0.5:
-        total = duration
-    if audio and audio_dur < total - 0.25:
-        audio = _pad_audio(audio, total, tmp / "voice_padded.m4a") or audio
-        audio_dur = total
+        fitted = _fit_audio(audio, total, tmp / "voice_fitted.m4a")
+        if fitted:
+            audio = fitted
+        else:
+            try:
+                over = probe_duration(audio) - total
+            except Exception:  # noqa: BLE001
+                over = 0.0
+            if over > 0.5:
+                warnings.append(
+                    f"la locución dura {over:.1f}s más de lo pedido y no se pudo ajustar"
+                )
 
     size = _size_for(platform)
     sentences = script_info["sentences"] or [script_text]
-    starts, ends = _sentence_timings(sentences, total)
-
     n = len(sentences)
+    # La tarjeta de título y la end card son cortas y el resto del video es
+    # contenido: con 15s de duración no pueden quedarse con 7,5s cada una.
+    card = _card_seconds(total) if n >= 3 else 0.0
+    starts, ends = _sentence_timings(sentences, total, card, card)
+
     queries = script_info.get("queries") or []
-    warnings: list[str] = []
     assets = _fetch_scene_media(sentences, queries, size, tmp)
     video_count = sum(1 for _, is_v in assets if is_v)
     image_count = sum(1 for p, is_v in assets if p is not None and not is_v)
+    stock_count = video_count + image_count
     if video_count or image_count:
         logger.info(
             "material por escena: %d b-roll, %d imágenes, %d fondos (%d escenas)",
@@ -1175,6 +1657,12 @@ def generate_ai_video(meta: dict, meta_path: Path | None, source: str | Path, tm
     else:
         warnings.append("sin material de stock ni imágenes; se usaron fondos de marca")
         logger.info("sin material por escena — gradientes de marca (%d escenas)", n)
+    # Más de la mitad en gradientes = el guion no trajo queries filmables: avisar.
+    if n >= 5 and (n - stock_count) > n / 2:
+        warnings.append(
+            f"más de la mitad del video quedó en fondos de marca "
+            f"({n - stock_count}/{n} escenas sin material de stock)"
+        )
 
     music_path = _resolve_music(meta.get("music"))
     if music_path is not None:
@@ -1222,6 +1710,12 @@ def generate_ai_video(meta: dict, meta_path: Path | None, source: str | Path, tm
             warnings.append("el video renderizado quedó vacío o demasiado corto")
     except Exception:  # noqa: BLE001
         warnings.append("no se pudo validar la duración del video renderizado")
+    # Métricas de b-roll: antes solo vivían dentro del texto del warning, así que
+    # no había forma de verificar el fix sin parsear texto en español.
+    script_info["scene_count"] = n
+    script_info["broll_count"] = video_count
+    script_info["stock_image_count"] = image_count
+    script_info["gradient_count"] = n - stock_count
     script_info["warnings"] = warnings
 
     if meta_path is not None:

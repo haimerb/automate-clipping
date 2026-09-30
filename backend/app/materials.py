@@ -50,6 +50,30 @@ class Material:
     page_url: str | None = None
 
 
+# Resolución mínima en el lado corto para cubrir 1080x1920 sin degradar.
+_MIN_SHORT_SIDE = 1080
+
+
+def _pick_video_variant(videos: dict) -> dict | None:
+    """Elige la variante de video más PEQUEÑA que todavía dé 1080px.
+
+    Pixabay siempre devolvía `large` (~50 MB) y el tope de descarga de 48 MB la
+    descartaba: el 68% de las escenas acababa en gradiente de marca. Para un
+    plano de 6-10s el 95% del archivo es basura que se tira igual.
+    """
+    ordered = [videos.get(k) for k in ("small", "medium", "large")]
+    usable = [
+        v for v in ordered
+        if v and v.get("url")
+        and min(int(v.get("width") or 0), int(v.get("height") or 0)) >= _MIN_SHORT_SIDE
+    ]
+    if usable:
+        return usable[0]  # la más chica que cumple
+    # si ninguna llega a 1080, la mayor disponible antes que nada
+    fallback = [v for v in ordered if v and v.get("url")]
+    return fallback[-1] if fallback else None
+
+
 @dataclass
 class MaterialLibrary:
     """Cliente con estado: claves, caché de búsquedas y set de assets usados.
@@ -232,7 +256,7 @@ class MaterialLibrary:
                 if v.get("width") and (v["width"] > v.get("height", 1)) != want_landscape:
                     continue
                 videos = v.get("videos") or {}
-                variant = videos.get("large") or videos.get("medium") or videos.get("small")
+                variant = _pick_video_variant(videos)
                 if not variant or not variant.get("url"):
                     continue
                 out.append(
