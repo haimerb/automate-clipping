@@ -226,7 +226,9 @@ def test_stock_wins_over_videogen(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("EDGETAPE_VIDEOGEN_BASE_URL", "https://x/v1")
     assets = ai_generate._fetch_scene_media(
         ["gancho", "uno", "dos", "cierre"],
-        ["cafe", "barista", "panaderia", "gracias"],
+        # queries en inglés: el validador descarta las de español y esa escena
+        # caería al proveedor de pago, que es justamente lo que este test no quiere
+        ["cafe", "barista", "bakery counter", "gracias"],
         (1080, 1920),
         tmp_path,
         max_total=1.0,
@@ -234,6 +236,7 @@ def test_stock_wins_over_videogen(monkeypatch, tmp_path: Path):
     )
     assert fake.calls == 0
     assert assets[1][0] is not None
+    assert assets[2][0] is not None
 
 
 class _FakeVideogen:
@@ -263,4 +266,38 @@ class _FakeLibrary:
 
     def take(self, picks):
         return _FakePick()
+
+
+def test_spanish_query_never_reaches_stock(monkeypatch, tmp_path: Path):
+    """Una query en español no se envía a Pexels: se pierde presupuesto y no
+    devuelve material que ilustre la escena (era 8 de 31 escenas con b-roll)."""
+    from app import ai_generate
+
+    searched: list[str] = []
+
+    class _Recording(_FakeLibrary):
+        def search(self, query, want_landscape, client=None):
+            searched.append(query)
+            return []
+
+        def take(self, picks):
+            return None
+
+    monkeypatch.setattr(ai_generate, "videogen", _FakeVideogen())
+    monkeypatch.setattr(ai_generate.materials, "build_library", lambda: _Recording())
+    monkeypatch.setattr(
+        ai_generate, "_fetch_wikimedia_images", lambda *a, **k: [None] * len(a[0])
+    )
+    monkeypatch.setenv("EDGETAPE_AI_IMAGES", "1")
+
+    ai_generate._fetch_scene_media(
+        ["gancho", "uno", "dos", "cierre"],
+        ["cafe", "saber hacer especial", "perro corriendo", "gracias"],
+        (1080, 1920),
+        tmp_path,
+        max_total=1.0,
+        per_request=1.0,
+    )
+    # las escenas 1 y 2 son las de cuerpo: ninguna query llegó al buscador
+    assert searched == []
 
