@@ -32,6 +32,8 @@ os.environ["EDGETAPE_QUEUE_TASK_DELAY"] = "0"
 os.environ["EDGETAPE_AI_IMAGES"] = "0"
 # Sin probe de Ollama (evita timeouts de conexión ~2.5s por test)
 os.environ["EDGETAPE_OLLAMA_PROBE"] = "0"
+# Sin tendencias por red en tests: metadata determinista y sin llamadas salientes
+os.environ["EDGETAPE_TRENDS"] = "0"
 # Build_transcriber siempre devuelve el mock (evita cargar faster-whisper)
 os.environ["EDGETAPE_MOCK_TRANSCRIBE"] = "1"
 # Quotas desactivadas: sin límite diario ni delay entre subidas
