@@ -169,6 +169,9 @@ async def run_job(job_id: str, store: JobStore, transcriber, selector=None) -> N
 
         job.duration = duration
         platform = _infer_platform(duration, job.source_url)
+        # La plataforma inferida manda en el export del paso de publicar. Un job
+        # largo se exporta horizontal; solo se recorta a 60s si es un Short.
+        job.platform = platform
         job.progress = 45
         store.save_job(job)
 
@@ -178,6 +181,10 @@ async def run_job(job_id: str, store: JobStore, transcriber, selector=None) -> N
             meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
             prompt = meta.get("prompt", "Video generado con IA")
             platform = meta.get("platform", platform)
+            # El paso de publicar lee `job.platform`; sin esto, un job `youtube`
+            # (horizontal, 900s) se publicaba como Short (vertical, 60s).
+            job.platform = platform
+            store.save_job(job)
             script_info = meta.get("script_gen") or {}
             script_text = str(script_info.get("script") or prompt)[:3000]
             hook = str(script_info.get("hook") or prompt)[:120]
@@ -227,6 +234,7 @@ async def run_job(job_id: str, store: JobStore, transcriber, selector=None) -> N
                     )
                     clip.exported = True
                     clip.export_name = out.name
+                    clip.export_platform = platform
                 except Exception:
                     logger.warning("export del clip %s falló", clip.id)
             _extract_thumbnails(source, clips, exports)
@@ -314,11 +322,31 @@ async def run_job(job_id: str, store: JobStore, transcriber, selector=None) -> N
     store.save_job(job)
 
 
+def _export_mode_for(job: Job, platform: str) -> str:
+    """Modo de corte según la plataforma destino.
+
+    `original` para formatos horizontales (YouTube video): aplicar `vertical_blur`
+    a una fuente 1920x1080 la convierte en 1080x1920 con bandas, que es lo
+    contrario de lo que se pidió. Los verticales (Shorts/TikTok/Reels) sí
+    necesitan el blur para no recortar.
+    """
+    override = os.environ.get("EDGETAPE_EXPORT_MODE")
+    if override:
+        return override
+    if platform in _HORIZONTAL_PLATFORMS:
+        return "original"
+    return "vertical_blur"
+
+
+_HORIZONTAL_PLATFORMS = frozenset({"youtube", "otros"})
+
+
 async def export_clip(
     job_id: str,
     clip_id: str,
     store: JobStore,
     max_duration: float | None = None,
+    platform: str | None = None,
 ) -> Clip | None:
     job = store.get_job(job_id)
     if job is None or job.status != "done":
@@ -326,30 +354,40 @@ async def export_clip(
     clip = next((c for c in store.get_clips(job_id) if c.id == clip_id), None)
     if clip is None:
         return None
+    target = platform or job.platform
+
     if clip.exported and clip.export_name:
         exports = store.exports_dir(job_id)
         out = exports / clip.export_name
-        if max_duration is None or max_duration <= 0:
-            return clip
-        try:
-            existing = await asyncio.to_thread(probe_duration, out)
-        except Exception:
-            existing = float("inf")
-        if existing <= max_duration:
-            return clip
+        # Reutilizar solo si el export actual corresponde a la MISMA plataforma:
+        # un clip ya cortado para Shorts (60s vertical) no vale para YouTube.
+        same_target = clip.export_platform == target
+        if same_target:
+            if max_duration is None or max_duration <= 0:
+                return clip
+            try:
+                existing = await asyncio.to_thread(probe_duration, out)
+            except Exception:
+                existing = float("inf")
+            if existing <= max_duration:
+                return clip
 
     exports = store.exports_dir(job_id)
     exports.mkdir(parents=True, exist_ok=True)
     safe = re.sub(r"[^\w.\-]", "_", clip.title).strip("_")[:40] or "clip"
     out = exports / f"{clip.id}_{safe}.mp4"
-    mode = os.environ.get("EDGETAPE_EXPORT_MODE", "vertical_blur")
+    mode = _export_mode_for(job, target)
     end = clip.end
     if max_duration is not None and max_duration > 0:
         end = min(end, clip.start + max_duration)
+    if end <= clip.start:
+        # El clip es más corto que el límite del formato: no se recorta nada,
+        # así que no hace falta re-cortar (y `cut_clip` fallaría con d=0).
+        end = clip.end
     await asyncio.to_thread(
         cut_clip, store.source_path(job_id), clip.start, end, out, mode,
         caption=clip.line or clip.script,
     )
     return store.update_clip(
-        job_id, clip_id, exported=True, export_name=out.name
+        job_id, clip_id, exported=True, export_name=out.name, export_platform=target,
     )
