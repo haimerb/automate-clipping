@@ -697,6 +697,33 @@ def test_ai_generate_complete_raises_without_credentials(
         aig.write_script(PROMPT, 30.0, "professional", "youtube_shorts")
 
 
+def test_ai_generate_parses_malformed_json_from_llm() -> None:
+    """`_loads_lenient` repara los formatos que emitted gpt-oss-20b de verdad.
+
+    Regresión del fallo reportado: `Expecting ':' delimiter: line 1 column 203`
+    viene de un campo huérfano o una coma perdida entre campos.
+    """
+    Q = chr(34)
+    casos = {
+        # coma perdida entre campos
+        "coma_faltante": '{' + Q + 'script' + Q + ': ' + Q + 'frase valida' + Q
+                         + ' ' + Q + 'queries' + Q + ': [' + Q + 'a' + Q + ']}',
+        # clave huérfana sin ':' (el error exacto reportado)
+        "campo_huerfano": '{' + Q + 'script' + Q + ': ' + Q + 'frase valida' + Q
+                          + ', ' + Q + 'orphan' + Q + ' ' + Q + 'valor' + Q + '}',
+        # separador ';' en vez de coma
+        "punto_coma": '{' + Q + 'script' + Q + ': ' + Q + 'frase valida' + Q
+                      + '; ' + Q + 'queries' + Q + ': []}',
+        # comas entre campos de array perdidas
+        "comas_perdidas": '{' + Q + 'script' + Q + ': ' + Q + 'frase valida' + Q
+                          + ', ' + Q + 'queries' + Q + ': [' + Q + 'a' + Q
+                          + ' ' + Q + 'b' + Q + ']}',
+    }
+    for nombre, blob in casos.items():
+        data = aig._loads_lenient(blob)
+        assert data["script"] == "frase valida", (nombre, data)
+
+
 def test_ai_generate_default_groq_model_is_alive(monkeypatch: pytest.MonkeyPatch) -> None:
     """El default directo de Groq no puede ser un modelo dado de baja."""
     monkeypatch.delenv("EDGETAPE_GROQ_MODEL", raising=False)
@@ -756,6 +783,60 @@ def test_ai_generate_write_script_chunks_long_video(monkeypatch: pytest.MonkeyPa
     # el 2º bloque recibe el contexto del 1º (las 3 últimas oraciones, para no repetir)
     assert "Lo último que escribiste" in calls[1]["messages"][1]["content"]
     assert "palabra724" in calls[1]["messages"][1]["content"]
+
+
+def test_ai_generate_write_script_truncates_on_bad_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Un bloque ilegible a mitad NO tira el guion: conserva el resto y avisa.
+
+    Regresión del fallo reportado: `bloque 3/8 de escenas ilegible:
+    Expecting ':' delimiter` tumbaba los 7 bloques ya buenos.
+    """
+    _llm_env(monkeypatch)
+    # bloque 3 irrecuperable: ni JSON ni un `script` rescatable por regex
+    bad = "Claro! Aqui tienes lo que me pediste, espero que sirva."
+    n = {"i": 0}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        i = n["i"]
+        n["i"] += 1
+        # índices 2 y 3 = los dos intentos del bloque 3
+        content = bad if i in (2, 3) else _fake_block_prompt()
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": content}, "finish_reason": "stop"}]},
+            request=request,
+        )
+
+    _patch_httpx(monkeypatch, httpx.MockTransport(_handler))
+    info = aig.write_script(PROMPT, 360.0, "professional", "youtube")
+
+    nblocks = len(aig._scene_blocks(aig._scene_count(360.0)))
+    # sobrevivieron los bloques 1, 2, 4..8 (7 de 8)
+    assert len(info["sentences"]) == (nblocks - 1) * 8
+    # y el truncado queda explícito: nada de degradación silenciosa
+    assert info["warnings"], "un guion truncado debe avisar"
+    assert any("3/" in w and "truncado" in w for w in info["warnings"]), info["warnings"]
+
+
+def test_ai_generate_first_bad_block_still_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Si el PRIMER bloque falla no hay guion que conservar: el job debe fallar."""
+    _llm_env(monkeypatch)
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "no hay json aqui"},
+                               "finish_reason": "stop"}]},
+            request=request,
+        )
+
+    _patch_httpx(monkeypatch, httpx.MockTransport(_handler))
+    with pytest.raises(aig.ScriptGenerationError):
+        aig.write_script(PROMPT, 360.0, "professional", "youtube")
 
 
 def test_ai_generate_write_script_retries_short_block(

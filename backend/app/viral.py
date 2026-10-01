@@ -12,6 +12,7 @@ import time
 import httpx
 
 from .scorer import _content_words
+from . import trends
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,9 @@ VIRAL_SYSTEM = (
     "NUNCA copies frases completas de la transcripción; reformula para que se lea rápido "
     "en un teléfono. "
     "REGLA CRÍTICA 3: Incluye SIEMPRE al final de la descripción '▶️ Video completo: <URL>' "
-    "si el video original tiene URL, y 6-10 hashtags relevantes de viralidad. " 
+    "si el video original tiene URL, y solo 3-6 hashtags: los específicos del tema "
+    "manda, la viralidad genérica ('#viral', '#trending', '#fyp') es opcional y "
+    "nunca debe ser el grueso de la lista. " 
     "NUNCA repitas la transcripción tal cual. "
     "Respondes SOLO con JSON válido, sin texto adicional."
 )
@@ -237,6 +240,32 @@ class LLMetadataGenerator:
                 client.close()
 
 
+MAX_TAGS = 6
+
+
+def _finalize_tags(tags: list[str], script: str, platform: str) -> list[str]:
+    """Tope de 6 tags + 0-1 tendencia fresca. Nunca lanza.
+
+    El cap de 6 es lo que separa "hashtags que descubren" de "stuffed": a
+    partir de ~6 el alcance se diluye y el engagement baja. Si la tendencia no
+    está disponible, `enrich_tags` devuelve los tags del LLM tal cual.
+    """
+    base = [str(t).lower().strip().lstrip("#") for t in (tags or [])]
+    base = [t for t in base if t and " " not in t]
+    deduped: list[str] = []
+    for t in base:
+        if t not in deduped:
+            deduped.append(t)
+    if not deduped:
+        return _heuristic_tags(script, platform)
+    try:
+        return trends.enrich_tags(deduped, platform, max_tags=MAX_TAGS)
+    except Exception as exc:  # noqa: BLE001
+        # las tendencias son un plus, nunca una dependencia
+        logger.info("sin enriquecimiento por tendencias: %s", exc)
+        return deduped[:MAX_TAGS]
+
+
 class HeuristicMetadataGenerator:
     name = "heuristic-metadata"
 
@@ -245,7 +274,7 @@ class HeuristicMetadataGenerator:
     ) -> dict:
         title = _heuristic_title(script, title_hint)
         description = _heuristic_description(script, duration, source_url)
-        tags = _heuristic_tags(script, platform)
+        tags = _finalize_tags([], script, platform)
         return {"title": title, "description": description, "tags": tags}
 
 
@@ -290,7 +319,7 @@ def generate_clip_metadata(
             logger.warning("clip has empty/short script (%d chars), using heuristic", len(script))
             clip["title"] = _heuristic_title(script, clip.get("title", ""))
             clip["description"] = _heuristic_description(script, clip.get("duration", 30.0), source_url)
-            clip["tags"] = _heuristic_tags(script, platform)
+            clip["tags"] = _finalize_tags([], script, platform)
             continue
         try:
             logger.info("generating metadata with %s for script=%d chars",
@@ -307,13 +336,13 @@ def generate_clip_metadata(
                 raise ValueError("LLM returned empty metadata")
             clip["title"] = meta.get("title", clip.get("title", ""))
             clip["description"] = meta.get("description", "")
-            clip["tags"] = meta.get("tags", [])
+            clip["tags"] = _finalize_tags(meta.get("tags", []), script, platform)
             logger.info("OK title=%s", clip["title"][:60])
         except Exception as exc:  # noqa: BLE001
             logger.warning("metadata generation FAILED (%s); using HEURISTIC", exc)
             clip["title"] = _heuristic_title(script, clip.get("title", ""))
             clip["description"] = _heuristic_description(script, clip.get("duration", 30.0), source_url)
-            clip["tags"] = _heuristic_tags(script, platform)
+            clip["tags"] = _finalize_tags([], script, platform)
             logger.info("heuristic title=%s", clip["title"][:60])
     return clips
 
@@ -346,14 +375,19 @@ def _build_metadata_prompt(script: str, title_hint: str, duration: float, platfo
         f"   - Línea 2 (opcional): 💡 + un detalle/insight extra concreto\n"
         f"   - Línea 3: 👉 + call-to-action corto (suscríbete, comenta, comparte)\n"
         f"   - Línea 4: ▶️ Video completo: {source_url or '[URL]'} (si hay video original)\n"
-        f"   - Línea 5: hashtags (6-10, en minúsculas, incluye #shorts y 2-3 del tema)\n"
+        f"   - Línea 5: hashtags (3-6, en minúsculas, incluye 1-2 del tema)\n"
         f"   - Reformula, NUNCA copies frases completas de la transcripción\n"
         f"   - Máximo 2-3 emojis, usados como separadores de sección\n\n"
-        f"3. TAGS (8-12 tags trending y relevantes, TODOS en minúsculas SIN '#'):\n"
-        f"   - 3-5 tags específicos del tema (no solo genéricos como 'viral')\n"
-        f"   - 2-3 tags de plataforma (#shorts #youtubeshorts #tiktok #reels)\n"
-        f"   - 1-2 tags trending genéricos (#viral #trending #fyp)\n"
-        f"   - Total: 8-12 tags, todos en minúsculas\n\n"
+        f"3. TAGS / HASHTAGS (3-6 en total, TODOS en minúsculas SIN '#'):\n"
+        f"   - RELEVANCIA > CANTIDAD: 3-6 tags gan engagement; 15+ tags lo HUNDEN\n"
+        f"   - 2-3 tags ESPECÍFICOS del tema (palabras clave reales del clip).\n"
+        f"     Ejemplo: si el clip es de pricing → 'pricing', 'precios', 'ventas'\n"
+        f"   - 1-2 tags de plataforma (#shorts #youtubeshorts #tiktok #reels)\n"
+        f"   - 0-1 tag amplio de descubrimiento (#viral #fyp) SOLO si el clip lo amerita\n"
+        f"   - Si detectas la INTENCIÓN del clip (curiosidad, sorpresa, dolor,\n"
+        f"     aspiración, solución), usa un tag que la capture\n"
+        f"   - NUNCA repitas el mismo tag ni uses solo genéricos sin relación\n"
+        f"   - Máximo absoluto: 6 tags\n\n"
         f"Responde SOLO con JSON:\n"
         f'{{"title": "<título>", "description": "<descripción>", "tags": [<tags>]}}'
     )
@@ -407,16 +441,47 @@ def _heuristic_description(script: str, duration: float, source_url: str | None 
     return base
 
 
+_STOPWORDS = {
+    "este", "esta", "esto", "ese", "esa", "eso", "aqui", "ahi", "alli",
+    "como", "cuando", "donde", "porque", "pero", "para", "porque", "muy",
+    "mas", "menos", "todo", "todos", "todo", "nada", "algo", "siempre",
+    "nunca", "tambien", "solo", "bien", "mejor", "peor", "mismo", "misma",
+    "hacer", "puede", "pueden", "tiene", "tienen", "hay", "ser", "estar",
+    "que", "los", "las", "una", "uno", "del", "con", "por", "sin", "sobre",
+    "entre", "desde", "hasta", "cada", "todo", "ya", "asi", "tu", "tus",
+    "su", "sus", "es", "son", "fue", "era", "han", "hay", "muy", "mas",
+    "clip", "video", "gente", "cosa", "cosas", "vez", "veces", "bien",
+}
+
+
 def _heuristic_tags(script: str, platform: str) -> list[str]:
-    base = {"shorts", "clip", "viral", "trending", "fyp"}
+    """Tags de respaldo: 3-6, relevantes y con 1-2 de plataforma.
+
+    Antes devolvía 12 tags casi idénticos para todos los videos (`viral`,
+    `trending`, `fyp` + 5 palabras), lo que no aporta descubrimiento: el
+    algoritmo prioriza retención y engagement, no stuffed de hashtags.
+    """
+    # 1-2 de plataforma según destino
+    platform_tags = ["shorts", "viral"]
     if "tiktok" in platform:
-        base |= {"foryou", "foryoupage", "tiktokviral"}
+        platform_tags = ["tiktok", "fyp"]
     elif "reels" in platform:
-        base |= {"reels", "instagram", "explore"}
+        platform_tags = ["reels", "viral"]
     elif "youtube" in platform:
-        base |= {"youtube", "youtubeshorts", "subscribe"}
-    words = _content_words(script)
-    for w in words[:5]:
-        if len(w) > 3:
-            base.add(w)
-    return sorted(base)[:12]
+        platform_tags = ["shorts", "viral"]
+    else:
+        platform_tags = ["viral", "trending"]
+
+    # 2-3 específicos del tema, sin stopwords ni palabras triviales
+    specific: list[str] = []
+    for w in _content_words(script):
+        if len(w) > 3 and w.lower() not in _STOPWORDS and w not in specific:
+            specific.append(w)
+        if len(specific) == 3:
+            break
+
+    tags: list[str] = []
+    for t in specific + platform_tags:
+        if t not in tags:
+            tags.append(t)
+    return tags[:6]

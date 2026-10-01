@@ -389,8 +389,50 @@ def _loads_lenient(blob: str) -> dict:
     except json.JSONDecodeError:
         pass
     repaired = _escape_inner_quotes(blob)
+    # reparar trailing commas
     repaired = re.sub(r",\s*([}\]])", r"\1", repaired)
-    return json.loads(repaired)
+    try:
+        return json.loads(repaired)
+    except json.JSONDecodeError:
+        pass
+    # reparar comas perdidas entre campos: } "key":
+    repaired2 = re.sub(r'}\s+"', '}, "', repaired)
+    # separar campos sin coma: "valor" "clave":
+    repaired2 = re.sub(r'"\s+"', '", "', repaired2)
+    # separar con ; entre campos
+    repaired2 = re.sub(r';\s+"', ', "', repaired2)
+    # intentar clave sin dos puntos: "key" "value" (dentro de objeto)
+    repaired2 = re.sub(r'"([^"]+)"\s+"([^"]+)"(?=\s*,|\s*})', r'"\1": "\2"', repaired2)
+    try:
+        return json.loads(repaired2)
+    except json.JSONDecodeError:
+        pass
+    # último recurso: extraer por regex independientes
+    out: dict = {}
+    m = re.search(r'"script"\s*:\s*"((?:[^"\\]|\\.)*)"', blob, re.DOTALL)
+    if m:
+        out["script"] = m.group(1).replace('\\"', '"').replace('\\n', '\n').replace('\\t', '\t')
+    m = re.search(r'"title"\s*:\s*"((?:[^"\\]|\\.)*)"', blob, re.DOTALL)
+    if m:
+        out["title"] = m.group(1).replace('\\"', '"')
+    m = re.search(r'"hook"\s*:\s*"((?:[^"\\]|\\.)*)"', blob, re.DOTALL)
+    if m:
+        out["hook"] = m.group(1).replace('\\"', '"')
+    tags: list[str] = []
+    for mm in re.finditer(r'"tags"\s*:\s*\[(.*?)\]', blob, re.DOTALL):
+        inner = mm.group(1)
+        for t in re.findall(r'"((?:[^"\\]|\\.)*)"', inner):
+            tags.append(t)
+    out["tags"] = tags
+    queries: list[str] = []
+    for mm in re.finditer(r'"queries"\s*:\s*\[(.*?)\]', blob, re.DOTALL):
+        inner = mm.group(1)
+        for q in re.findall(r'"((?:[^"\\]|\\.)*)"', inner):
+            queries.append(q)
+    out["queries"] = queries
+    if not out.get("script") or len(out.get("script", "")) < 5:
+        raise ValueError("no JSON object found in LLM response")
+    return out
 
 
 def _parse_script_json(content: str) -> dict:
@@ -572,19 +614,39 @@ def write_script(prompt: str, duration: float, style: str, platform: str) -> dic
     sentences: list[str] = []
     queries: list[str] = []
     meta: dict = {}
+    warnings: list[str] = []
     for i, span in enumerate(spans):
-        block_words = scene_words * (span[1] - span[0])
+        block_words = scene_words * (span[0 + 1] - span[0])
         try:
             got_meta, got_sentences, got_queries = _ask_block(
                 prompt, style, pname, nscenes, span, i, nblocks,
                 block_words, total_words, scene_words, sentences, queries,
             )
-        except ScriptGenerationError:
-            raise
+        except ScriptGenerationError as exc:
+            # Decisión de diseño: un bloque ilegible NO tira el guion entero.
+            # Si ya acumulamos escenas, se sigue con lo bueno y se avisa; solo
+            # abortamos si el primer bloque falla (guion = 0 escenas).
+            if not sentences:
+                raise
+            msg = str(exc)
+            warnings.append(
+                f"bloque {i + 1}/{nblocks} ilegible: {msg}; "
+                f"guion truncado en {len(sentences)} escenas"
+            )
+            logger.warning("bloque %d/%d ilegible; continuando con %d escenas previas",
+                           i + 1, nblocks, len(sentences))
+            continue
         except Exception as exc:  # noqa: BLE001
-            raise ScriptGenerationError(
-                f"bloque {i + 1}/{nblocks} de escenas ilegible: {exc}"
-            ) from exc
+            if not sentences:
+                raise ScriptGenerationError(
+                    f"bloque {i + 1}/{nblocks} de escenas ilegible: {exc}"
+                ) from exc
+            warnings.append(
+                f"bloque {i + 1}/{nblocks} error: {exc}; "
+                f"guion truncado en {len(sentences)} escenas"
+            )
+            logger.warning("bloque %d/%d error (%s); continuando", i + 1, nblocks, exc)
+            continue
         if i == 0:
             meta = got_meta
         sentences.extend(got_sentences)
@@ -592,6 +654,7 @@ def write_script(prompt: str, duration: float, style: str, platform: str) -> dic
 
     if not sentences:
         raise ScriptGenerationError("el LLM no devolvió ninguna escena")
+
 
     script = " ".join(sentences)
     got_words = _word_count(script)
@@ -612,6 +675,7 @@ def write_script(prompt: str, duration: float, style: str, platform: str) -> dic
         "queries": queries,
         "target_words": total_words,
         "spoken_seconds": got_words / WORD_RATE,
+        "warnings": warnings,
     }
 
 
@@ -1602,7 +1666,9 @@ def generate_ai_video(meta: dict, meta_path: Path | None, source: str | Path, tm
     logger.info("guion para IA (%.0fs): %d caracteres, %d escenas",
                 duration, len(script_text), len(script_info["sentences"]))
 
-    warnings: list[str] = []
+    # Los avisos del guion (bloques ilegibles/truncados) viajan al job: un guion
+    # truncado no puede degradarse en silencio.
+    warnings: list[str] = list(script_info.get("warnings") or [])
     # Un guion corto deja el video en silencio al final: la duración pedida manda
     # pero el aviso viaja al job (no se estira el TTS para disimularlo).
     spoken = float(script_info.get("spoken_seconds") or 0.0)
