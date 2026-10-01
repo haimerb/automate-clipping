@@ -22,12 +22,14 @@ import {
 } from "@mui/material";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import {
+  HORIZONTAL_PLATFORMS,
   PLATFORM_LABELS,
   POST_STATUS_LABELS,
   accountsForPlatform,
   formatDuration,
   getAccounts,
   getPosts,
+  maxSecondsFor,
   patchJobSettings,
   publishClip,
   request,
@@ -74,8 +76,17 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
 
   const selected = clips.filter((c) => c.publish);
 
+  // La plataforma con la que se creó el job es la que manda: un video generado
+  // como "YouTube (video)" (horizontal, hasta 900s) no debe offered por defecto
+  // como Short (vertical, 60s). Antes el destino caía en `DEFAULT_PLATFORM`
+  // siempre, y por eso un video de 6 min salía como Short de 1 min.
+  const jobPlatform = job.platform || job.auto_publish_platform || DEFAULT_PLATFORM;
+
   const autoPublish = autoPublishOverrides.enabled ?? job.auto_publish;
-  const autoPublishPlatform = autoPublishOverrides.platform || job.auto_publish_platform || "youtube_shorts";
+  // El selector de arriba manda sobre los destinos de abajo mientras el usuario
+  // no los haya tocado a mano (draftPlatform solo se setea al cambiar el Select).
+  const defaultTargetPlatform = autoPublishOverrides.platform || jobPlatform;
+  const autoPublishPlatform = defaultTargetPlatform;
   const autoPublishAccount = autoPublishOverrides.account || job.auto_publish_account || "";
 
   async function refreshPosts() {
@@ -101,7 +112,7 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
       .then((list) => {
         setAccounts(list);
         for (const clip of selected) {
-          const platform = draftPlatform[clip.id] ?? DEFAULT_PLATFORM;
+          const platform = draftPlatform[clip.id] ?? defaultTargetPlatform;
           const available = accountsForPlatform(list, platform);
           if (!draftAccount[clip.id] && available[0]) {
             setDraftAccount((prev) => ({ ...prev, [clip.id]: available[0].name }));
@@ -133,12 +144,46 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
   );
 
   function defaultDraft(clipId: string): { platform: string; account: string } {
-    const platform = draftPlatform[clipId] ?? DEFAULT_PLATFORM;
+    const platform = draftPlatform[clipId] ?? defaultTargetPlatform;
     const available = accountsForPlatform(accounts, platform);
     const account = available.some((a) => a.name === draftAccount[clipId])
       ? draftAccount[clipId]
       : available[0]?.name ?? "";
     return { platform, account };
+  }
+
+  /** Aviso honesto sobre lo que le va a pasar al clip en ese destino.
+   *
+   * El backend recorta al publicar (`publish_one` → `max_duration`), así que
+   * publicar un clip de 6 min en Shorts lo deja en 1 min SIN avisar. Aquí se
+   * dice antes de que el usuario pulse Publicar. */
+  function describeMismatch(clip: Clip, platform: string): string | null {
+    const label = PLATFORM_LABELS[platform] ?? platform;
+    const limit = maxSecondsFor(platform);
+    const notes: string[] = [];
+
+    if (clip.duration > limit + 0.5) {
+      notes.push(
+        `${label} admite ${formatDuration(limit)}: se publicará recortado a ${formatDuration(limit)} de los ${formatDuration(clip.duration)} del clip.`,
+      );
+    }
+
+    const isVerticalTarget = !HORIZONTAL_PLATFORMS.has(platform);
+    const wasVerticalExport = clip.export_platform
+      ? !HORIZONTAL_PLATFORMS.has(clip.export_platform)
+      : null;
+    if (clip.exported && wasVerticalExport !== null && wasVerticalExport !== isVerticalTarget) {
+      notes.push(
+        isVerticalTarget
+          ? "El clip se exportó horizontal; al publicar aquí se re-cortará a vertical con fondo borroso."
+          : "El clip se exportó vertical; al publicar aquí se quedará en vertical, no se recorta a horizontal.",
+      );
+    } else if (clip.exported && platform !== jobPlatform) {
+      notes.push(
+        `El video se creó para ${PLATFORM_LABELS[jobPlatform] ?? jobPlatform}; al publicar en ${label} se recorta con el formato de ${label}.`,
+      );
+    }
+    return notes.length > 0 ? notes.join(" ") : null;
   }
 
   function changeDraftPlatform(clipId: string, platform: string) {
@@ -213,7 +258,33 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
   }
 
   async function updateAutoPublishTarget(platform: string, account: string) {
+    const prevPlatform = defaultTargetPlatform;
     setAutoPublishOverrides((prev) => ({ ...prev, platform, account }));
+    if (prevPlatform !== platform) {
+      // El destino manual hereda la plataforma de arriba SOLO en los clips donde
+      // el usuario no eligió una a mano; si la eligió, se respeta su decisión
+      // (es una elección deliberada, no un default olvidado).
+      const touched = new Set(Object.keys(draftPlatform));
+      setDraftPlatform((prev) => {
+        const next = { ...prev };
+        for (const clip of selected) {
+          if (!touched.has(clip.id)) delete next[clip.id];
+        }
+        return next;
+      });
+      // La cuenta también hay que re-resolver: el canal de YouTube Shorts y el
+      // de YouTube video son el mismo `platform` de cuenta pero distinto destino.
+      const available = accountsForPlatform(accounts, platform);
+      setDraftAccount((prev) => {
+        const next = { ...prev };
+        for (const clip of selected) {
+          if (!touched.has(clip.id)) {
+            next[clip.id] = available[0]?.name ?? "";
+          }
+        }
+        return next;
+      });
+    }
     if (autoPublish) {
       try {
         const updated = await patchJobSettings(job.id, true, platform, account || null);
@@ -594,6 +665,7 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
                             const key = `${clip.id}|${index}`;
                             const busyHere = busy === key;
                             const accountStatus = getAccountStatusLabel(dest.account);
+                            const mismatch = describeMismatch(clip, dest.platform);
                             return (
                               <Paper
                                 key={key}
@@ -646,6 +718,19 @@ export default function Publish({ job, clips, onUpdateClip, onBack, onJobChange 
                                       }}
                                     />
                                   </Stack>
+                                  {mismatch && (
+                                    <Alert
+                                      severity="warning"
+                                      sx={{
+                                        mt: 1,
+                                        py: 0.25,
+                                        fontSize: "0.7rem",
+                                        alignItems: "center",
+                                      }}
+                                    >
+                                      {mismatch}
+                                    </Alert>
+                                  )}
                                   <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
                                     {post?.url && (
                                       <Button

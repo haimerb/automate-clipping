@@ -1108,7 +1108,7 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
     @app.post("/api/jobs/{job_id}/clips/{clip_id}/export", response_model=Clip)
     async def export(job_id: str, clip_id: str, user: User = Depends(get_current_user)) -> Clip:
         job = owned_job(job_id, user.id)
-        clip = await export_clip(job.id, clip_id, store)
+        clip = await export_clip(job.id, clip_id, store, platform=job.platform)
         if clip is None:
             raise HTTPException(status_code=404, detail="clip not found or job not done")
         return clip

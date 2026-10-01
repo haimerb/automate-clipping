@@ -21,6 +21,12 @@ class Job(BaseModel):
     auto_publish: bool = False
     auto_publish_platform: str = "youtube_shorts"
     auto_publish_account: str | None = None
+    # Plataforma para la que se creó/clippeó el job. Es la que manda en el
+    # export (orientación y duración máxima): `youtube` sale horizontal y sin
+    # recortar a 60s, `youtube_shorts` vertical. Antes esta info vivía solo en
+    # `generate_meta.json` — invisible para el paso de publicar, que acababa
+    #_publicando un video horizontal de 6 min como Short de 60s.
+    platform: str = "youtube_shorts"
     created_at: str
 
 
@@ -41,6 +47,10 @@ class Clip(BaseModel):
     thumbnail_index: int = 0
     exported: bool = False
     export_name: str | None = None
+    # Para qué plataforma se cortó `export_name`. Sin esto, un clip ya exportado
+    # como Short (60s, vertical) se reutilizaba tal cual al publicar en YouTube
+    # (900s, horizontal): el early-return de `export_clip` solo comparaba duración.
+    export_platform: str | None = None
     publish: bool = False
     destinations: list[dict] = []
 

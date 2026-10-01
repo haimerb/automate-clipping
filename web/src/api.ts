@@ -16,6 +16,9 @@ export interface Job {
   auto_publish: boolean;
   auto_publish_platform: string;
   auto_publish_account: string | null;
+  /** Plataforma para la que se creó el job: manda en el export (orientación
+   *  y duración máxima). No confundir con auto_publish_platform. */
+  platform: string;
   created_at: string;
 }
 
@@ -36,6 +39,9 @@ export interface Clip {
   thumbnail_index: number;
   exported: boolean;
   export_name: string | null;
+  /** Plataforma para la que se cortó `export_name`. Permite avisar si el
+   *  destino elegido no coincide con el archivo ya exportado. */
+  export_platform: string | null;
   publish: boolean;
   destinations: Destination[];
 }
@@ -609,6 +615,24 @@ export const PLATFORM_LABELS: Record<string, string> = {
   instagram_reels: "Instagram Reels",
   otros: "Otra plataforma",
 };
+
+/** Espejo de `backend/app/scorer.py::FORMAT_LIMITS`. Solo el máximo importa en
+ *  la UI: es lo que decide si el destino recorta el clip al publicar. */
+export const PLATFORM_MAX_SECONDS: Record<string, number> = {
+  youtube_shorts: 60,
+  tiktok: 60,
+  facebook_reels: 90,
+  instagram_reels: 90,
+  youtube: 900,
+  otros: 120,
+};
+
+/** Plataformas horizontales: el export no debe aplicar `vertical_blur`. */
+export const HORIZONTAL_PLATFORMS = new Set(["youtube", "otros"]);
+
+export function maxSecondsFor(platform: string): number {
+  return PLATFORM_MAX_SECONDS[platform] ?? 120;
+}
 
 // plataforma de publicación -> platform de la cuenta vinculada asociada
 export const PLATFORM_ACCOUNT_PLATFORM: Record<string, string> = {
