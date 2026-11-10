@@ -29,6 +29,7 @@ from . import tiktok_publish as tiktok_pub
 from . import youtube_publish as ytpub
 from .llm_scorer import build_clip_selector
 from .media import extract_thumbnail
+from .ratelimit import SlidingWindowLimiter, parse_rate
 from .scorer import _limits_for
 from .models import (
     Clip,
@@ -163,6 +164,46 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
         allow_headers=["*"],
     )
 
+    # ── límites de abuso ───────────────────────────────
+    rate_disabled = os.environ.get("EDGETAPE_RATE_LIMIT", "1").strip().lower() in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+    auth_max, auth_window = parse_rate(os.environ.get("EDGETAPE_AUTH_RATE_LIMIT", "20/min"))
+    jobs_max, jobs_window = parse_rate(os.environ.get("EDGETAPE_JOBS_RATE_LIMIT", "30/hour"))
+    auth_limiter = SlidingWindowLimiter(0 if rate_disabled else auth_max, auth_window or 60.0)
+    jobs_limiter = SlidingWindowLimiter(0 if rate_disabled else jobs_max, jobs_window or 3600.0)
+
+    try:
+        max_upload_bytes = int(os.environ.get("EDGETAPE_MAX_UPLOAD_BYTES", str(2 * 1024**3)))
+    except ValueError:
+        max_upload_bytes = 2 * 1024**3
+
+    def _client_ip(request: Request) -> str:
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+        return request.client.host if request.client else "unknown"
+
+    def _enforce(limiter: SlidingWindowLimiter, key: str) -> None:
+        allowed, retry_after = limiter.hit(key)
+        if not allowed:
+            raise HTTPException(
+                status_code=429,
+                detail="Demasiadas peticiones; probá de nuevo en un momento",
+                headers={"Retry-After": str(int(retry_after) + 1)},
+            )
+
+    def auth_rate_limit(request: Request) -> None:
+        _enforce(auth_limiter, f"auth:{_client_ip(request)}")
+
+    def jobs_rate_limit(
+        request: Request, user: User = Depends(get_current_user)
+    ) -> None:
+        _enforce(jobs_limiter, f"jobs:{user.id}")
+
     def owned_job(job_id: str, user_id: str) -> Job:
         job = store.get_job(job_id)
         if job is None or job.owner_id != user_id:
@@ -253,7 +294,11 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
     # ── auth ──────────────────────────────────────────
 
     @app.post("/api/auth/register", response_model=TokenResponse, status_code=201)
-    def register(body: RegisterRequest, db: Session = Depends(get_db)) -> TokenResponse:
+    def register(
+        body: RegisterRequest,
+        db: Session = Depends(get_db),
+        _rl: None = Depends(auth_rate_limit),
+    ) -> TokenResponse:
         email = body.email.strip().lower()
         if not email or "@" not in email:
             raise HTTPException(status_code=422, detail="Email inválido")
@@ -273,7 +318,11 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
         return TokenResponse(access_token=create_token(user), user=UserOut(**user.__dict__))
 
     @app.post("/api/auth/login", response_model=TokenResponse)
-    def login(body: LoginRequest, db: Session = Depends(get_db)) -> TokenResponse:
+    def login(
+        body: LoginRequest,
+        db: Session = Depends(get_db),
+        _rl: None = Depends(auth_rate_limit),
+    ) -> TokenResponse:
         email = body.email.strip().lower()
         user = db.scalar(select(User).where(User.email == email))
         if user is None or not verify_password(body.password, user.password_hash):
@@ -450,6 +499,7 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
         body: GenerateRequest,
         user: User = Depends(get_current_user),
         db: Session = Depends(get_db),
+        _rl: None = Depends(jobs_rate_limit),
     ) -> dict:
         if not body.prompt.strip():
             raise HTTPException(status_code=422, detail="El prompt no puede estar vacío")
@@ -704,19 +754,44 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
 
     @app.post("/api/jobs", status_code=202)
     async def create_job(
-        file: UploadFile = File(...), user: User = Depends(get_current_user)
+        file: UploadFile = File(...),
+        user: User = Depends(get_current_user),
+        _rl: None = Depends(jobs_rate_limit),
     ) -> Job:
         job = store.create_job(file.filename or "upload", owner_id=user.id)
         dest = store.upload_path(job.id)
-        with dest.open("wb") as fh:
-            while chunk := await file.read(1024 * 1024):
-                fh.write(chunk)
+        declared = file.headers.get("content-length") if file.headers else None
+        if declared and declared.isdigit() and int(declared) > max_upload_bytes:
+            store.delete_job(job.id)
+            raise HTTPException(
+                status_code=413,
+                detail=f"El archivo supera el límite de {max_upload_bytes // (1024**2)} MB",
+            )
+        written = 0
+        try:
+            with dest.open("wb") as fh:
+                while chunk := await file.read(1024 * 1024):
+                    written += len(chunk)
+                    if written > max_upload_bytes:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=(
+                                "El archivo supera el límite de "
+                                f"{max_upload_bytes // (1024**2)} MB"
+                            ),
+                        )
+                    fh.write(chunk)
+        except Exception:
+            store.delete_job(job.id)
+            raise
         enqueue_job(job.id, str(store.root))
         return store.get_job(job.id)  # type: ignore[return-value]
 
     @app.post("/api/jobs/youtube", status_code=202, response_model=Job)
     async def create_youtube_job(
-        body: YoutubeRequest, user: User = Depends(get_current_user)
+        body: YoutubeRequest,
+        user: User = Depends(get_current_user),
+        _rl: None = Depends(jobs_rate_limit),
     ) -> Job:
         if not is_youtube_url(body.url.strip()):
             raise HTTPException(status_code=400, detail="La URL no parece ser de YouTube")
@@ -728,7 +803,9 @@ def create_app(storage_root: str | Path | None = None, transcriber=None, selecto
 
     @app.post("/api/jobs/url", status_code=202, response_model=Job)
     async def create_url_job(
-        body: YoutubeRequest, user: User = Depends(get_current_user)
+        body: YoutubeRequest,
+        user: User = Depends(get_current_user),
+        _rl: None = Depends(jobs_rate_limit),
     ) -> Job:
         """Crea job desde cualquier URL descargable (YouTube, Twitch, Zoom, Vimeo, …).
 

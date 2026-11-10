@@ -94,6 +94,14 @@ class JobStore:
                 path.unlink(missing_ok=True)
         return freed
 
+    def delete_job(self, job_id: str) -> bool:
+        """Elimina por completo el directorio del job (JSON incluido)."""
+        job_dir = self.job_dir(job_id)
+        if not job_dir.exists():
+            return False
+        shutil.rmtree(job_dir, ignore_errors=True)
+        return True
+
     def sweep_media(self, max_age_days: float = 7.0, keep: int = 1) -> dict[str, int]:
         """Limpieza global: recorta `previous/` y elimina `ai_tmp` huérfanos.
 

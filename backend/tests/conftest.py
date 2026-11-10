@@ -39,6 +39,8 @@ os.environ["EDGETAPE_MOCK_TRANSCRIBE"] = "1"
 # Quotas desactivadas: sin límite diario ni delay entre subidas
 os.environ["EDGETAPE_MIN_UPLOAD_DELAY"] = "0"
 os.environ["EDGETAPE_MAX_UPLOADS_PER_DAY"] = "999"
+# Rate limiting desactivado: los tests hacen muchas peticiones desde el mismo IP
+os.environ["EDGETAPE_RATE_LIMIT"] = "0"
 
 from app.main import create_app  # noqa: E402
 
