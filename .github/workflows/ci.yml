@@ -52,6 +52,10 @@ jobs:
         working-directory: web
         run: pnpm install --frozen-lockfile
 
+      - name: Tests
+        working-directory: web
+        run: pnpm test
+
       - name: Typecheck + build
         working-directory: web
         run: pnpm build
