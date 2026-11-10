@@ -1,6 +1,18 @@
 #!/bin/sh
 set -e
 
+# Si arrancamos como root, damos permisos al usuario sin privilegios sobre el
+# storage (puede ser un bind mount) y re-ejecutamos este script como `edgetape`.
+# /app ya se chown-ea en build; solo se toca si el volumen no es escribible.
+if [ "$(id -u)" = "0" ] && [ "${EDGETAPE_RUN_AS_ROOT:-0}" != "1" ]; then
+  STORAGE="${EDGETAPE_STORAGE:-/data/storage}"
+  mkdir -p "$STORAGE" 2>/dev/null || true
+  if ! gosu edgetape:edgetape sh -c 'test -w "$0"' "$STORAGE" 2>/dev/null; then
+    chown -R edgetape:edgetape "$STORAGE" 2>/dev/null || true
+  fi
+  exec gosu edgetape:edgetape "$0" "$@"
+fi
+
 ROLE="${EDGETAPE_ROLE:-all}"
 PORT="${PORT:-8000}"
 # En Linux (contenedor) prefork deja que una tarea dormida (p. ej. esperando
