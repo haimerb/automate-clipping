@@ -41,6 +41,18 @@ os.environ["EDGETAPE_MIN_UPLOAD_DELAY"] = "0"
 os.environ["EDGETAPE_MAX_UPLOADS_PER_DAY"] = "999"
 # Rate limiting desactivado: los tests hacen muchas peticiones desde el mismo IP
 os.environ["EDGETAPE_RATE_LIMIT"] = "0"
+# Sin TTS por red: los tests de generación mockean build_voiceover; el resto
+# (regenerate) no debe intentar edge-tts/gTTS ni esperar timeouts.
+os.environ["EDGETAPE_TTS_PROVIDER"] = "none"
+# Sin proveedores de imágenes/video IA en tests (se mockean en sus propios tests)
+os.environ["EDGETAPE_IMAGE_PROVIDER"] = "off"
+os.environ["EDGETAPE_VIDEO_PROVIDER"] = "off"
+os.environ["EDGETAPE_TOPIC_IMAGES"] = "0"
+# El plan/QA de tema agrega llamadas al LLM; los tests de guion cuentan requests
+# exactos, así que se desactiva por defecto (los tests nuevos lo activan).
+os.environ["EDGETAPE_TOPIC_PLAN"] = "0"
+os.environ["EDGETAPE_TOPIC_QA"] = "0"
+os.environ["EDGETAPE_QUOTA_FILE"] = str(tempfile.mkdtemp(prefix="edgetape-quota-") + "/quota.json")
 
 from app.main import create_app  # noqa: E402
 

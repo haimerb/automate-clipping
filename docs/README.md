@@ -17,9 +17,16 @@ Diagrama Mermaid del pipeline de edgetape:
 **Ingesta** (archivo, URL con yt-dlp o generación con IA) → Cola Celery/Redis → `process_job` (descarga → transcripción → scoring LLM/heurístico) → metadata viral → clips → límites de duración por formato → export vertical → miniaturas virales → storage JSON → API + JWT → cola de publicación persistente → upload (YouTube v3, TikTok Content Posting API, Facebook Graph o Instagram Reels con URL firmada; con respaldo a Studio cuando no hay OAuth) → posts.json → dashboard.
 
 El subgrafo **MOTOR DE VIDEO GENERADO** (`ai_generate`) es la cascada del job `generate`, donde
-ninguna degradación es silenciosa: guion (LLM → determinístico), voz (edge-tts → gTTS → sin voz),
-material por escena (Pexels/Pixabay → `videogen` de pago → Wikimedia → fondos de marca) y música
-opcional. Cada salto hacia abajo se acumula en `job.warning`.
+ninguna degradación es silenciosa. El guion parte de un *fact sheet* del tema (entidades, hechos y
+sujeto visual), se escribe por bloques y se verifica con `topic_coverage`; si baja del umbral se
+regenera una vez. La voz se sintetiza por oración con duraciones reales (`narration.py`:
+edge-tts → gTTS → sin voz) para que escenas y subtítulos no se desincronicen. El material prioriza
+imágenes reales del sujeto (Wikimedia Commons) → stock Pexels/Pixabay → imagen IA sin watermark
+(Cloudflare FLUX) → `videogen` → Wikimedia por oración → hero shots de video IA (HF ZeroGPU,
+image-to-video) → fondos de marca. Cada proveedor gratis lleva cuota diaria UTC (`quota.py`) y
+cada salto hacia abajo se acumula en `job.warning`. El montaje usa cortes limpios, grade
+unificado, subtítulos por cláusula y música con *ducking*; el reporte por escena queda en
+`visual_report.json`.
 
 Para renderizarlo:
 
