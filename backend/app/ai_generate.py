@@ -1,16 +1,17 @@
 from __future__ import annotations
 
-"""Generación procedimental de video con IA como origen: el LLM escribe el guion
-y las keywords visuales de cada escena, el TTS (edge-tts → gTTS) lo narra y
-ffmpeg monta un video profesional por escenas: tarjeta de título animada, un clip
-de b-roll real con movimiento (Pexels/Pixabay) o una imagen con efecto Ken
-Burns/paneo, fades, subtítulos lower-third con chip de keywords y música de fondo
-opcional — vertical (Shorts/Reels/TikTok) u horizontal (YouTube video largo).
+"""Generación procedimental de video con IA como origen: el LLM investiga el tema,
+escribe el guion y las queries visuales de cada escena, el TTS (edge-tts → gTTS)
+lo narra y ffmpeg monta un video por escenas: tarjeta de título animada, b-roll
+real con movimiento (Pexels/Pixabay), imagen del sujeto (Wikimedia), imagen IA sin
+watermark (Cloudflare FLUX) o hero shot de video IA (HF ZeroGPU), con Ken Burns,
+grade unificado, subtítulos por cláusula y música con ducking — vertical
+(Shorts/Reels/TikTok) u horizontal (YouTube video largo).
 
-Degradación en cascada (nunca queda mudo):
+Degradación en cascada (nunca queda muda ni silenciosa):
 - sin TTS → el video sale sin voz (con música si se pidió);
-- sin b-roll → fotos de stock → material generado por IA (opcional) → Wikimedia
-  → fondos de marca variados;
+- sin material del sujeto → stock → imagen IA → videogen → Wikimedia por oración
+  → hero shots → fondos de marca variados;
 - si el render por escenas falla → el render legacy de un solo fondo;
 - cada degradación se registra en `warnings` y viaja al job (no falla en silencio).
 
@@ -35,6 +36,9 @@ import httpx
 from . import materials
 from . import videogen
 from .media import FFMPEG, FFPROBE, _emoji_strip, _find_font, probe_duration
+from .narration import build_narration
+from .providers import images as ai_images
+from .providers import video as ai_video
 from .scorer import _content_words
 
 logger = logging.getLogger(__name__)
@@ -103,8 +107,10 @@ _SCRIPT_SYSTEM = (
     "escena del video con UN SOLO b-roll, así que una idea por oración, frases "
     "breves, autónomas y fáciles de acompañar con una imagen. "
     "Para cada oración produce además una 'query' visual en INGLÉS de 2 a 4 "
-    "palabras (sustantivos concretos y filmables, sin nombres propios ni marcas, "
-    "sin texto) para buscar b-roll de stock que ilustre esa escena. "
+    "palabras (sustantivos concretos y filmables, sin texto) para buscar b-roll "
+    "de stock que ilustre esa escena. Puedes nombrar entidades reales del tema "
+    "(personas, clubes, lugares) cuando la escena trate de ellas; para búsquedas "
+    "genéricas usa sustantivos filmables en inglés. "
     "Respondes SOLO con JSON válido, sin texto adicional."
 )
 
@@ -113,6 +119,8 @@ _VOICE_MAP = {
     "es_mx_male": "es-MX-JorgeNeural",
     "es_es_female": "es-ES-ElviraNeural",
     "es_es_male": "es-ES-AlvaroNeural",
+    "es_ar_female": "es-AR-ElenaNeural",
+    "es_ar_male": "es-AR-TomasNeural",
 }
 
 
@@ -279,11 +287,104 @@ def _scene_blocks(nscenes: int) -> list[tuple[int, int]]:
     return [(i, min(i + step, nscenes)) for i in range(0, nscenes, step)]
 
 
+_TOPIC_SYSTEM = (
+    "Eres un investigador que prepara un video. Extraes del tema las entidades "
+    "reales (personas, clubes, lugares, fechas) y hechos verificables que un "
+    "guion no puede inventar. Respondes SOLO con JSON válido."
+)
+
+_TOPIC_PROMPT = (
+    "Tema del video: {prompt}\n\n"
+    "Devuelve un 'fact_sheet' breve y un 'visual_subject' que sirva para buscar "
+    "imágenes reales del tema (el nombre propio más específico, o vacío si el "
+    "tema es genérico). Incluye solo hechos que conozcas con seguridad; no "
+    "inventes fechas ni resultados.\n\n"
+    "Responde SOLO con JSON:\n"
+    '{{"entities": ["..."], "facts": ["..."], "visual_subject": "..."}}'
+)
+
+# Cobertura mínima del tema para no publicar un guion que se va por las ramas.
+_TOPIC_MIN_COVERAGE = 0.8
+
+
+def _topic_min_coverage() -> float:
+    try:
+        return float(os.environ.get("EDGETAPE_TOPIC_MIN_COVERAGE", str(_TOPIC_MIN_COVERAGE)))
+    except ValueError:
+        return _TOPIC_MIN_COVERAGE
+
+
+def _topic_plan(prompt: str) -> dict:
+    """Entidades/hechos del tema. Si el LLM falla, heurística sin red."""
+    if os.environ.get("EDGETAPE_TOPIC_PLAN", "1") == "0":
+        return _topic_plan_fallback(prompt)
+    try:
+        raw = _complete(_TOPIC_SYSTEM, _TOPIC_PROMPT.format(prompt=prompt),
+                        timeout=45.0, max_tokens=700)
+        data = _loads_lenient(raw)
+        entities = [str(e).strip() for e in (data.get("entities") or []) if str(e).strip()]
+        facts = [str(f).strip() for f in (data.get("facts") or []) if str(f).strip()]
+        subject = str(data.get("visual_subject") or "").strip()
+        return {
+            "entities": entities[:8],
+            "facts": facts[:8],
+            "visual_subject": subject or (entities[0] if entities else ""),
+        }
+    except Exception as exc:  # noqa: BLE001 — el plan de tema nunca tumba el guion
+        logger.info("plan de tema sin LLM (%s); heurística", exc)
+        return _topic_plan_fallback(prompt)
+
+
+def _topic_plan_fallback(prompt: str) -> dict:
+    quoted = re.findall(r"[\"“”']([^\"“”']{3,60})[\"“”']", prompt)
+    caps = re.findall(r"\b(?:[A-ZÁÉÍÓÚÑ][\wÁÉÍÓÚÑáéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][\wÁÉÍÓÚÑáéíóúñ]+)*)", prompt)
+    candidates = [q.strip() for q in quoted] + [c.strip() for c in caps]
+    # "El", "La", "Un" al inicio no son entidades.
+    candidates = [c for c in dict.fromkeys(candidates) if c.lower() not in {"el", "la", "los", "las", "un", "una"}]
+    subject = candidates[0] if candidates else ""
+    return {"entities": candidates[:8], "facts": [], "visual_subject": subject}
+
+
+def _verify_topic(prompt: str, script: str, entities: list[str]) -> dict:
+    """Puntúa cuánto cubre el guion el tema y qué falta. Nunca lanza."""
+    if os.environ.get("EDGETAPE_TOPIC_QA", "1") == "0":
+        return {"coverage": 1.0, "missing": [], "off_topic": []}
+    try:
+        raw = _complete(
+            "Eres un editor exigente. Evalúas si un guion responde al tema.",
+            (
+                f"Tema: {prompt}\n\nGuion:\n{script}\n\n"
+                "Devuelve SOLO JSON: "
+                '{"coverage": 0.0, "missing": ["..."], "off_topic": ["..."]}'
+            ),
+            timeout=45.0,
+            max_tokens=600,
+        )
+        data = _loads_lenient(raw)
+        coverage = float(data.get("coverage", 0.0))
+        coverage = max(0.0, min(1.0, coverage))
+        return {
+            "coverage": coverage,
+            "missing": [str(x) for x in (data.get("missing") or [])][:6],
+            "off_topic": [str(x) for x in (data.get("off_topic") or [])][:6],
+        }
+    except Exception:  # noqa: BLE001
+        if not entities:
+            return {"coverage": 1.0, "missing": [], "off_topic": []}
+        hits = sum(1 for e in entities if e.lower() in script.lower())
+        return {
+            "coverage": hits / max(1, len(entities)),
+            "missing": [e for e in entities if e.lower() not in script.lower()][:6],
+            "off_topic": [],
+        }
+
+
 _SCRIPT_PROMPT = (
     "Plataforma objetivo: {platform}\n"
     "Duración del video: {duration:.0f} segundos\n"
     "Estilo: {style}\n\n"
     "Tema: {prompt}\n\n"
+    "{context}\n\n"
     "Instrucciones:\n"
     "1. Guion narrado en español de ≈{words} palabras, dividido en {nscenes} "
     "oraciones cortas para locución (una oración = una escena).\n"
@@ -292,12 +393,16 @@ _SCRIPT_PROMPT = (
     "3. Arranca con un gancho que enganche en los primeros 2 segundos.\n"
     "4. Termina con un cierre o call-to-action breve.\n"
     "5. Sin emojis, sin rótulos, solo el texto que se va a narrar.\n"
-    "6. Devuelve 'queries': exactamente UNA keyword visual EN INGLÉS "
+    "6. Usa los hechos y entidades del contexto cuando existan; no inventes "
+    "fechas, resultados ni citas. Si no hay datos, narra el tema sin afirmar "
+    "hechos dudosos.\n"
+    "7. Devuelve 'queries': exactamente UNA keyword visual EN INGLÉS "
     "(2-4 palabras, concreta y filmable) por oración, en el MISMO orden y con "
     "la misma cantidad de elementos que oraciones.\n\n"
     "Responde SOLO con JSON:\n"
     '{{"title": "<título efectivo y concreto>", "hook": "<gancho máx 60 caracteres>", '
     '"script": "<oración. Oración. Oración.>", "tags": ["tag1", "tag2"], '
+    '"entities": ["..."], "visual_subject": "...", '
     '"queries": ["city skyline", "happy family", "..."]}}'
 )
 
@@ -307,6 +412,7 @@ _SCRIPT_BLOCK_PROMPT = (
     "Plataforma objetivo: {platform}\n"
     "Estilo: {style}\n"
     "Tema: {prompt}\n\n"
+    "{context}\n\n"
     "Continuación del guion: estás escribiendo las escenas {first}-{last} "
     "de {nscenes} (bloque {block} de {nblocks}), en español.\n\n"
     "{prev}\n\n"
@@ -316,7 +422,7 @@ _SCRIPT_BLOCK_PROMPT = (
     "corto, el video se queda mudo en el medio.\n"
     "2. No repitas ni reformules lo ya escrito ni lo de los bloques anteriores.\n"
     "3. La última escena del bloque debe dejar el hilo abierto para continuar.\n"
-    "4. Sin emojis, sin rótulos.\n"
+    "4. Sin emojis, sin rótulos. Usa las entidades y hechos del contexto.\n"
     "5. 'queries': exactamente UNA keyword visual EN INGLÉS (2-4 palabras, "
     "concreta y filmable) por oración, en el MISMO orden y con la misma cantidad "
     "de elementos que oraciones.\n\n"
@@ -459,6 +565,8 @@ def _parse_script_json(content: str) -> dict:
         "script": script,
         "tags": [str(t).lower().strip() for t in (data.get("tags") or [])][:15],
         "queries": queries,
+        "entities": [str(e).strip() for e in (data.get("entities") or []) if str(e).strip()][:8],
+        "visual_subject": str(data.get("visual_subject") or "").strip()[:80],
     }
 
 
@@ -499,6 +607,7 @@ def _ask_block(
     prompt: str, style: str, pname: str, nscenes: int, span: tuple[int, int],
     block_index: int, nblocks: int, words: int, total_words: int,
     scene_words: int, prev_sentences: list[str], prev_queries: list[str],
+    context: str = "",
 ) -> tuple[dict, list[str], list[str]]:
     """Pide un bloque de escenas al LLM. Devuelve (metadata, oraciones, queries).
 
@@ -523,19 +632,20 @@ def _ask_block(
         )
         base = head + _SCRIPT_PROMPT.format(
             platform=pname, duration=total_words / WORD_RATE,
-            style=style or "professional", prompt=prompt,
+            style=style or "professional", prompt=prompt, context=context or "",
             words=words, nscenes=nscenes, wlo=wlo, whi=whi,
         )
     else:
         tail = prev_sentences[-3:] if prev_sentences else []
-        context = ("Lo último que escribiste: " + " ".join(tail)) if tail else ""
+        prev_context = ("Lo último que escribiste: " + " ".join(tail)) if tail else ""
         if prev_queries:
-            context += "\nQueries ya usadas (no las repitas): " + ", ".join(prev_queries[-6:])
+            prev_context += "\nQueries ya usadas (no las repitas): " + ", ".join(prev_queries[-6:])
         base = _SCRIPT_BLOCK_PROMPT.format(
             platform=pname, style=style or "professional", prompt=prompt,
+            context=context or "",
             first=first + 1, last=last, nscenes=nscenes, block=block_index + 1,
             nblocks=nblocks, count=count, wlo=wlo, whi=whi,
-            prev=context or "(empiezas el guion)",
+            prev=prev_context or "(empiezas el guion)",
         )
 
     parsed: dict | None = None
@@ -586,19 +696,28 @@ def _ask_block(
     queries += [""] * (len(sentences) - len(queries))
     meta = (
         {"title": parsed.get("title", ""), "hook": parsed.get("hook", ""),
-         "tags": parsed.get("tags", [])}
+         "tags": parsed.get("tags", []), "entities": parsed.get("entities", []),
+         "visual_subject": parsed.get("visual_subject", "")}
         if block_index == 0 else {}
     )
     return meta, sentences, queries
 
 
-def write_script(prompt: str, duration: float, style: str, platform: str) -> dict:
+def write_script(
+    prompt: str, duration: float, style: str, platform: str,
+    _tried_retry: bool = False,
+) -> dict:
     """Guion del LLM para el prompt, por bloques de escenas.
 
     Un request único no sirve para formatos largos: los ~2000 palabras de un
     video de 15 min superan el presupuesto de Groq, y el modelo de razonamiento
     lo consume en `reasoning` y devuelve `content=""`. Por eso el guion se pide
     en bloques de `SCRIPT_BLOCK_SCENES` y se concatena.
+
+    Antes de escribir, se extraen entidades/hechos del tema (fact sheet) para
+    que el guion no invente y las búsquedas visuales puedan usar el nombre real
+    del sujeto. Al final se verifica la cobertura del tema; si es muy baja en
+    formatos cortos se regenera una vez.
 
     Sin LLM, o si algún bloque no entrega escenas, levanta
     `ScriptGenerationError` y el job falla: es preferible a un job `done` con
@@ -611,6 +730,16 @@ def write_script(prompt: str, duration: float, style: str, platform: str) -> dic
     spans = _scene_blocks(nscenes)
     nblocks = len(spans)
 
+    topic = _topic_plan(prompt)
+    context_lines: list[str] = []
+    if topic.get("entities"):
+        context_lines.append("Entidades del tema: " + ", ".join(topic["entities"]))
+    if topic.get("facts"):
+        context_lines.append("Hechos verificados: " + "; ".join(topic["facts"]))
+    if topic.get("visual_subject"):
+        context_lines.append(f"Sujeto visual principal: {topic['visual_subject']}")
+    context = "\n".join(context_lines) or "(sin datos adicionales; no inventes hechos)"
+
     sentences: list[str] = []
     queries: list[str] = []
     meta: dict = {}
@@ -621,6 +750,7 @@ def write_script(prompt: str, duration: float, style: str, platform: str) -> dic
             got_meta, got_sentences, got_queries = _ask_block(
                 prompt, style, pname, nscenes, span, i, nblocks,
                 block_words, total_words, scene_words, sentences, queries,
+                context=context,
             )
         except ScriptGenerationError as exc:
             # Decisión de diseño: un bloque ilegible NO tira el guion entero.
@@ -655,17 +785,48 @@ def write_script(prompt: str, duration: float, style: str, platform: str) -> dic
     if not sentences:
         raise ScriptGenerationError("el LLM no devolvió ninguna escena")
 
-
     script = " ".join(sentences)
     got_words = _word_count(script)
     # `sentences` se trunca a SCENES_MAX_SENTENCES: las queries se recortan al
     # MISMO tamaño, si no la última escena se queda con la query de otra.
     sentences = sentences[:SCENES_MAX_SENTENCES]
     queries = queries[: len(sentences)]
-    logger.info(
-        "script en %d bloque(s): %d palabras, %d escenas (pedidas %d)",
-        nblocks, got_words, len(sentences), total_words,
+    entities = list(dict.fromkeys(
+        [str(e).strip() for e in (meta.get("entities") or topic.get("entities") or [])
+         if str(e).strip()]
+    ))[:8]
+    visual_subject = (
+        str(meta.get("visual_subject") or "").strip()
+        or str(topic.get("visual_subject") or "").strip()
+        or (entities[0] if entities else "")
     )
+    check = _verify_topic(prompt, script, entities)
+    coverage = float(check.get("coverage", 1.0))
+    if coverage < _topic_min_coverage():
+        msg = (
+            f"cobertura del tema baja ({coverage:.0%})"
+            + (f"; falta: {', '.join(check.get('missing') or [])}" if check.get("missing") else "")
+        )
+        if not _tried_retry and duration <= 180:
+            logger.warning("%s; regenerando el guion una vez", msg)
+            return write_script(prompt, duration, style, platform, _tried_retry=True)
+        warnings.append(msg)
+        logger.warning("%s; se publica con aviso", msg)
+
+    logger.info(
+        "script en %d bloque(s): %d palabras, %d escenas (pedidas %d), "
+        "cobertura del tema %.0f%%",
+        nblocks, got_words, len(sentences), total_words, coverage * 100,
+    )
+    shots = [
+        {
+            "i": i,
+            "sentence": sentence,
+            "query": queries[i] if i < len(queries) else "",
+            "shot_type": "hook" if i == 0 else ("cta" if i == len(sentences) - 1 else "b-roll"),
+        }
+        for i, sentence in enumerate(sentences)
+    ]
     return {
         "title": (meta.get("title") or "").strip()[:100] or prompt[:100],
         "hook": (meta.get("hook") or "").strip()[:70] or sentences[0][:70],
@@ -673,6 +834,12 @@ def write_script(prompt: str, duration: float, style: str, platform: str) -> dic
         "sentences": sentences,
         "tags": [str(t).lower().strip() for t in (meta.get("tags") or [])][:15],
         "queries": queries,
+        "entities": entities,
+        "visual_subject": visual_subject,
+        "facts": topic.get("facts") or [],
+        "topic_coverage": round(coverage, 3),
+        "topic_missing": check.get("missing") or [],
+        "shots": shots,
         "target_words": total_words,
         "spoken_seconds": got_words / WORD_RATE,
         "warnings": warnings,
@@ -728,24 +895,36 @@ def _fit_audio(audio: str, target: float, out: Path) -> str | None:
     return None
 
 
-async def _edge_tts_save(text: str, voice: str, out: Path) -> None:
+async def _edge_tts_save(text: str, voice: str, out: Path, rate: str | None = None) -> None:
     import edge_tts
 
-    communicate = edge_tts.Communicate(text, voice)
+    kwargs = {}
+    if rate:
+        kwargs["rate"] = rate
+    communicate = edge_tts.Communicate(text, voice, **kwargs)
     await communicate.save(str(out))
 
 
 def build_voiceover(text: str, voice: str | None, out: Path) -> str | None:
-    """Edge-TTS con respaldo gTTS; sin voz si ambos fallan o no están instalados."""
+    """Edge-TTS con respaldo gTTS; sin voz si ambos fallan o no están instalados.
+
+    `EDGETAPE_TTS_PROVIDER=none` desactiva la síntesis (tests y renders sin voz).
+    `EDGETAPE_TTS_RATE` ajusta la velocidad de edge-tts (ej. "+5%", "-5%").
+    """
+    provider = os.environ.get("EDGETAPE_TTS_PROVIDER", "auto").strip().lower()
+    if provider in {"none", "off", "0", "sin"}:
+        return None
     target = _resolve_voice(voice)
-    try:
-        asyncio.run(_edge_tts_save(text, target, out))
-        if out.exists() and out.stat().st_size > 0:
-            logger.info("voz edge-tts OK (%s)", target)
-            return str(out)
-        raise RuntimeError("edge-tts devolvió archivo vacío")
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("edge-tts FAILED (%s); probando gTTS", exc)
+    rate = os.environ.get("EDGETAPE_TTS_RATE") or None
+    if provider not in {"gtts"}:
+        try:
+            asyncio.run(_edge_tts_save(text, target, out, rate=rate))
+            if out.exists() and out.stat().st_size > 0:
+                logger.info("voz edge-tts OK (%s)", target)
+                return str(out)
+            raise RuntimeError("edge-tts devolvió archivo vacío")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("edge-tts FAILED (%s); probando gTTS", exc)
     try:
         from gtts import gTTS
 
@@ -1092,6 +1271,77 @@ def _pick_image_info(pages: dict, want_landscape: bool) -> str | None:
     return None
 
 
+def _fetch_wikimedia_topic_images(
+    topic: str, count: int, size: tuple[int, int], tmp: Path,
+    client: httpx.Client | None = None, max_total: float = 45.0,
+) -> list[Path]:
+    """Imágenes reales del SUJETO del video (Commons), no de la oración.
+
+    Es la corrección al problema de fondo: para "Boca Juniors" el pipeline
+    buscaba "saber historia mirar" en stock y mostraba cualquier cosa. Aquí se
+    busca el nombre propio y se reparten sus imágenes entre las escenas.
+    """
+    topic = (topic or "").strip()
+    if not topic or count <= 0:
+        return []
+    if os.environ.get("EDGETAPE_TOPIC_IMAGES", "1") == "0":
+        return []
+    want_landscape = size[0] >= size[1]
+    own = client is None
+    out: list[Path] = []
+    seen: set[str] = set()
+    try:
+        c = client or httpx.Client(timeout=12.0, headers={"User-Agent": _UA})
+        try:
+            params = {
+                "action": "query",
+                "generator": "search",
+                "gsrsearch": f"{topic} filetype:bitmap",
+                "gsrnamespace": "6",
+                "gsrlimit": "30",
+                "prop": "imageinfo",
+                "iiprop": "url|size|mime",
+                "iiurlwidth": "1600",
+                "format": "json",
+                "origin": "*",
+            }
+            resp = c.get(_WIKIMEDIA_API, params=params)
+            resp.raise_for_status()
+            pages = resp.json().get("query", {}).get("pages", {})
+            deadline = time.monotonic() + max_total
+            for page in pages.values():
+                if len(out) >= count or time.monotonic() > deadline:
+                    break
+                ii = (page.get("imageinfo") or [None])[0]
+                if not ii or ii.get("mime") not in _IMAGE_MIMES:
+                    continue
+                w, h = int(ii.get("width") or 0), int(ii.get("height") or 0)
+                if w < 640 or h < 640:
+                    continue
+                if (want_landscape and h > w) or (not want_landscape and w > h):
+                    continue
+                url = ii.get("thumburl") or ii.get("url")
+                if not url or url in seen:
+                    continue
+                seen.add(url)
+                image = c.get(url)
+                if image.status_code != 200:
+                    continue
+                p = tmp / f"topic_{len(out)}.img"
+                p.write_bytes(image.content)
+                if p.stat().st_size < 1024:
+                    p.unlink(missing_ok=True)
+                    continue
+                out.append(p)
+                logger.info("sujeto '%s': imagen %d de Wikimedia Commons", topic, len(out))
+        finally:
+            if own:
+                c.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("imágenes del sujeto '%s' fuera de servicio (%s)", topic, exc)
+    return out
+
+
 def _fetch_wikimedia_images(
     sentences: list[str], size: tuple[int, int], tmp: Path,
     max_total: float = 45.0, per_request: float = 10.0, client: httpx.Client | None = None,
@@ -1201,14 +1451,20 @@ def _try_videogen(
 def _fetch_scene_media(
     sentences: list[str], queries: list[str] | None, size: tuple[int, int], tmp: Path,
     max_total: float | None = None, per_request: float = 12.0,
+    topic: str | None = None, report: dict | None = None,
 ) -> list[tuple[Path | None, bool]]:
-    """Material por escena: b-roll real de stock (video > foto) y respaldo Wikimedia.
+    """Material por escena con prioridad al SUJETO del video.
+
+    Orden (de más relevante a más genérico):
+    1. imágenes reales del sujeto (Wikimedia Commons del nombre propio);
+    2. b-roll/fotos de stock para las escenas que el sujeto no cubre;
+    3. imagen generada con IA (Cloudflare FLUX, sin watermark);
+    4. proveedor de video IA configurado (`videogen`);
+    5. imágenes por oración de Wikimedia;
+    6. hero shots de video IA (HF ZeroGPU) sobre las imágenes ya elegidas.
 
     Devuelve (ruta, es_video) por oración; la ruta va SIN extensión (se re-probea).
     Nunca lanza: sin red/claves deja escenas en None para usar fondos de marca.
-    Las queries del LLM se validan con `is_usable_query`: una query en español
-    no se envía a Pexels/Pixabay (no devuelven nada útil) y la escena cae a las
-    capas siguientes en vez de gastar presupuesto en una búsqueda inútil.
     """
     n = len(sentences)
     if os.environ.get("EDGETAPE_AI_IMAGES", "1") == "0" or n <= 1:
@@ -1221,13 +1477,46 @@ def _fetch_scene_media(
         max_total = max(45.0, min(540.0, (n - 2) * _BROLL_SECONDS_PER_SCENE))
     want_landscape = size[0] >= size[1]
     assets: list[tuple[Path | None, bool]] = [(None, False)] * n
-    library = materials.build_library()
-    rejected = 0
+    body = list(range(1, n - 1 if n > 1 else n))
+    if report is not None:
+        report.setdefault("scenes", [{} for _ in range(n)])
+        report.setdefault("providers", {})
+        report["topic"] = topic or ""
+
+    def _mark(i: int, path: Path | None, is_video: bool, provider: str, query: str = "") -> None:
+        assets[i] = (path, is_video)
+        if report is not None and path is not None:
+            report["scenes"][i] = {
+                "kind": "video" if is_video else "image",
+                "provider": provider,
+                "query": query,
+                "path": str(path),
+            }
+            report["providers"][provider] = report["providers"].get(provider, 0) + 1
 
     with httpx.Client(timeout=per_request, headers={"User-Agent": _UA}) as client:
         deadline = time.monotonic() + max_total
+
+        # 1) El sujeto del video manda: si hay nombre propio, sus imágenes reales
+        #    se reparten entre las escenas antes de buscar stock genérico.
+        topic_images: list[Path] = []
+        if topic and body:
+            topic_images = _fetch_wikimedia_topic_images(
+                topic, len(body), size, tmp, client=client,
+                max_total=min(45.0, max(10.0, max_total * 0.35)),
+            )
+            for idx, i in enumerate(body):
+                if idx >= len(topic_images):
+                    break
+                _mark(i, topic_images[idx], False, "wikimedia-topic", topic)
+
+        # 2) Stock para las escenas que el sujeto no cubrió.
+        library = materials.build_library()
+        rejected = 0
         if library is not None:
-            for i in range(1, n - 1 if n > 1 else n):
+            for i in body:
+                if assets[i][0] is not None:
+                    continue
                 if time.monotonic() > deadline:
                     logger.warning("tiempo de búsqueda de b-roll agotado en la escena %d", i)
                     break
@@ -1247,7 +1536,7 @@ def _fetch_scene_media(
                     continue
                 dest = tmp / f"scene_{i}.asset"
                 if materials.download(client, pick, dest):
-                    assets[i] = (dest, pick.kind == "video")
+                    _mark(i, dest, pick.kind == "video", pick.provider, q)
                     logger.info("escena %d: %s %s · %s", i, pick.provider, pick.kind, q)
 
         if rejected:
@@ -1256,12 +1545,40 @@ def _fetch_scene_media(
                 "(se usaron fondos de marca en esas escenas)", rejected, max(0, n - 2),
             )
 
-        pending = [
-            i for i in range(n)
-            if assets[i][0] is None and i != 0 and not (i == n - 1 and n > 1)
-        ]
+        pending = [i for i in body if assets[i][0] is None]
+
+        # 3) Imagen generada con IA (sin watermark) para lo que el stock no cubrió.
+        if pending and ai_images.is_configured():
+            try:
+                budget = max(0, int(os.environ.get("EDGETAPE_AI_IMAGE_MAX_SCENES", "24")))
+            except ValueError:
+                budget = 24
+            for i in pending[:budget]:
+                raw_q = queries[i] if queries and i < len(queries) else ""
+                if raw_q and not is_usable_query(raw_q):
+                    raw_q = ""
+                q = raw_q or _scene_query(sentences[i]) or sentences[i][:60]
+                prompt = f"{topic}, {q}" if topic and q else (q or sentences[i][:60])
+                path = ai_images.generate_image(prompt, size, tmp / f"scene_{i}.ai")
+                if path is not None:
+                    _mark(i, path, False, "cloudflare-flux", q)
+            pending = [i for i in body if assets[i][0] is None]
+
+        # 4) Proveedor de video IA opcional (pago o free con token).
         if pending:
             pending = _try_videogen(pending, sentences, queries, size, tmp, assets)
+            for i in range(n):
+                if assets[i][0] is not None and report is not None:
+                    if not report["scenes"][i]:
+                        report["scenes"][i] = {
+                            "kind": "video" if assets[i][1] else "image",
+                            "provider": "videogen",
+                            "query": queries[i] if queries and i < len(queries) else "",
+                            "path": str(assets[i][0]),
+                        }
+                        report["providers"]["videogen"] = report["providers"].get("videogen", 0) + 1
+
+        # 5) Imágenes por oración de Wikimedia.
         if pending:
             images = _fetch_wikimedia_images(
                 sentences, size, tmp,
@@ -1269,7 +1586,30 @@ def _fetch_scene_media(
             )
             for i in pending:
                 if images[i] is not None:
-                    assets[i] = (images[i], False)
+                    _mark(i, images[i], False, "wikimedia", _scene_query(sentences[i]))
+
+    # 6) Hero shots: animar algunas imágenes con video IA (HF ZeroGPU, sin watermark).
+    if ai_video.is_configured() and body:
+        try:
+            budget = max(0, int(os.environ.get("EDGETAPE_HERO_SHOTS", "3")))
+        except ValueError:
+            budget = 3
+        heroes = [
+            i for i in body
+            if assets[i][0] is not None and not assets[i][1]
+        ][:budget]
+        for i in heroes:
+            query = queries[i] if queries and i < len(queries) else ""
+            prompt = f"{topic}, {query}" if topic and query else (query or sentences[i][:80])
+            out = tmp / f"scene_{i}.hero.mp4"
+            path = ai_video.image_to_video(Path(assets[i][0]), prompt, out)
+            if path is not None:
+                _mark(i, path, True, "hf-zerogpu", query)
+
+    if report is not None:
+        for i in range(n):
+            if assets[i][0] is None and not report["scenes"][i]:
+                report["scenes"][i] = {"kind": "gradient", "provider": "brand", "query": ""}
     return assets
 
 
@@ -1285,8 +1625,21 @@ def _run_ffmpeg(cmd: list[str], timeout: int = 600) -> None:
         raise RuntimeError(f"ffmpeg ai render failed (rc={result.returncode}): {err}")
 
 
+def _grade_filter() -> str:
+    """Grade sutil que unifica stock, fotos y FLUX. `EDGETAPE_GRADE=off` lo quita."""
+    mode = os.environ.get("EDGETAPE_GRADE", "cinematic").strip().lower()
+    if mode in {"none", "off", "0", ""}:
+        return ""
+    return "eq=contrast=1.05:saturation=1.06:brightness=0.01"
+
+
 def _render_segment(still: Path, dur: float, variant: int, size: tuple[int, int], out: Path) -> None:
-    """Ken Burns (zoom/paneo alternando) + fade in/out a negro por escena."""
+    """Ken Burns (zoom/paneo alternando) + grade sutil, sin fade a negro.
+
+    El fade in/out por escena hacía que el video pareciera una presentación de
+    diapositivas. Ahora las escenas se cortan limpias y solo el grade unifica
+    el material (stock, foto, FLUX).
+    """
     w, h = size
     frames = max(1, int(round(dur * 30.0)))
     if variant % 3 == 1:
@@ -1297,10 +1650,8 @@ def _render_segment(still: Path, dur: float, variant: int, size: tuple[int, int]
         z, x = "min(zoom+0.0006,1.15)", "iw/2-(iw/zoom/2)"
     y = "ih/2-(ih/zoom/2)" if variant % 3 == 0 else "ih/2-(ih/1.15/2)"
     zoom = f"zoompan=z='{z}':x='{x}':y='{y}':d=1:s={w}x{h}:fps=30"
-    filters = zoom
-    if dur > 1.6:
-        filters += f",fade=t=in:st=0:d=0.5,fade=t=out:st={max(0.0, dur - 0.5):.2f}:d=0.5"
-    filters += ",format=yuv420p"
+    grade = _grade_filter()
+    filters = f"{zoom},{grade + ',' if grade else ''}format=yuv420p"
     _run_ffmpeg([
         FFMPEG, "-y", "-hide_banner", "-loglevel", "error",
         "-loop", "1", "-framerate", "30", "-t", f"{dur:.3f}", "-i", str(still),
@@ -1323,12 +1674,11 @@ def _render_segment_video(
         f"scale={w}:{h}:force_original_aspect_ratio=increase",
         f"crop={w}:{h}",
         "setsar=1",
+        # Sin hflip: espejaba logos, texto y caras. Sin fades a negro por escena.
     ]
-    if variant % 2 == 1:
-        filters.append("hflip")  # variedad sutil entre escenas consecutivas
-    if dur > 1.6:
-        filters.append(f"fade=t=in:st=0:d=0.5")
-        filters.append(f"fade=t=out:st={max(0.0, dur - 0.5):.2f}:d=0.5")
+    grade = _grade_filter()
+    if grade:
+        filters.append(grade)
     filters.append("format=yuv420p")
     _run_ffmpeg([
         FFMPEG, "-y", "-hide_banner", "-loglevel", "error",
@@ -1446,7 +1796,7 @@ def _render_legacy_single_bg(
         "-t", f"{total:.3f}", "-c:v", "libx264", "-preset", "veryfast",
         "-f", "mp4", str(base),
     ])
-    caps = _render_captions(sentences, [None] * len(sentences), size, tmp)
+    caps = _render_captions(sentences, size, tmp)
     slices: list[Path] = []
     for i, (st, en) in enumerate(zip(starts, ends)):
         sl = tmp / f"_slice{i}.mp4"
@@ -1462,10 +1812,33 @@ def _render_legacy_single_bg(
 # ── Subtítulos (lower-third) ────────────────────────────────
 
 
+def _caption_text(sentence: str, max_chars: int = 90) -> str:
+    """Texto breve para el subtítulo: primera cláusula, sin chip de keywords.
+
+    El chip metía palabras sueltas en español sobre la imagen ("SABER HACER
+    ESPECIAL") y el subtítulo completo ocupaba 3-4 líneas. Una cláusula corta se
+    lee de un vistazo y acompaña a la voz en vez de competir con ella.
+    """
+    text = _emoji_strip(sentence).strip()
+    if not text:
+        return ""
+    first = re.split(r"(?<=[,;:])\s+", text, maxsplit=1)[0].strip()
+    if len(first) < 18 and len(text) > len(first):
+        first = text
+    if len(first) > max_chars:
+        first = first[:max_chars].rsplit(" ", 1)[0].rstrip(" ,;:") + "…"
+    return first
+
+
 def _render_captions(
-    sentences: list[str], keywords: list[str | None], size: tuple[int, int], out_dir: Path,
-) -> list[Path]:
-    """Tarjetas de subtítulo (PNG RGBA) sincronizadas a cada escena, con chip de keywords."""
+    sentences: list[str], size: tuple[int, int], out_dir: Path,
+) -> list[Path | None]:
+    """Tarjetas de subtítulo (PNG RGBA), una cláusula corta por escena.
+
+    `EDGETAPE_SUBTITLE_MODE=none` desactiva los subtítulos quemados.
+    """
+    if os.environ.get("EDGETAPE_SUBTITLE_MODE", "clause").strip().lower() in {"none", "off", "0"}:
+        return [None] * len(sentences)
     from PIL import Image, ImageDraw
 
     base_w, base_h = size
@@ -1474,40 +1847,26 @@ def _render_captions(
         out = out_dir / f"cap_{i}.png"
         img = Image.new("RGBA", (base_w, base_h), (0, 0, 0, 0))
         d = ImageDraw.Draw(img)
-        text = _emoji_strip(sentence)[:160]
+        text = _caption_text(sentence)
         max_w = int(base_w * 0.82)
-        fontsize = int(base_w * 0.046)
+        fontsize = int(base_w * 0.052)
         fnt = _load_font(fontsize)
-        while fnt.size > int(base_w * 0.03):
+        while fnt.size > int(base_w * 0.034):
             lines = _wrap_measure(d, text, fnt, max_w)
-            if all(d.textlength(l, font=fnt) <= max_w for l in lines) and len(lines) <= 3:
+            if all(d.textlength(l, font=fnt) <= max_w for l in lines) and len(lines) <= 2:
                 break
             fnt = _load_font(fnt.size - 4)
-        lines = _wrap_measure(d, text, fnt, max_w)[:3]
+        lines = _wrap_measure(d, text, fnt, max_w)[:2]
         line_h = int(fnt.size * 1.16)
         box_w = max_w + int(base_w * 0.05)
-        box_h = line_h * len(lines) + int(base_h * 0.05)
+        box_h = line_h * len(lines) + int(base_h * 0.045)
         bx = (base_w - box_w) // 2
-        by = int(base_h * 0.70)
+        by = int(base_h * 0.74)
         d.rounded_rectangle([bx, by, bx + box_w, by + box_h], radius=int(base_h * 0.012),
-                            fill=(6, 12, 28, 195))
-        d.rectangle([bx, by, bx + int(base_w * 0.014), by + box_h], fill=_hex_to_rgb(_MARK) + (255,))
+                            fill=(6, 12, 28, 190))
+        d.rectangle([bx, by, bx + int(base_w * 0.012), by + box_h], fill=_hex_to_rgb(_MARK) + (255,))
 
-        kw = (keywords[i] or "").strip() if i < len(keywords) else ""
-        if kw and len(kw) <= 28:
-            chip_fnt = _load_font(int(base_w * 0.03))
-            chip_txt = kw.upper()
-            chip_w = int(d.textlength(chip_txt, font=chip_fnt) + base_w * 0.04)
-            chip_h = int(base_h * 0.045)
-            chip_y = by - chip_h - int(base_h * 0.014)
-            d.rounded_rectangle(
-                [bx + int(base_w * 0.02), chip_y, bx + int(base_w * 0.02) + chip_w, chip_y + chip_h],
-                radius=int(chip_h / 2), fill=_hex_to_rgb(_MARK) + (255,),
-            )
-            d.text((bx + int(base_w * 0.04), chip_y + int(chip_h * 0.24)), chip_txt,
-                   font=chip_fnt, fill=(10, 16, 40))
-
-        ty = by + int(base_h * 0.024)
+        ty = by + int(base_h * 0.022)
         for line in lines:
             tw = d.textlength(line, font=fnt)
             d.text(((base_w - tw) / 2, ty), line, font=fnt, fill="white",
@@ -1616,9 +1975,14 @@ def _resolve_music(choice: str | None) -> Path | None:
 
 
 def _mix_music(voice: str | None, total: float, music: Path, out: Path) -> str | None:
-    """Mezcla la pista bajo la voz (o genera audio solo con música). Nunca lanza."""
+    """Mezcla la pista bajo la voz con ducking (baja cuando habla). Nunca lanza.
+
+    Si el filtro de ducking no está disponible en el ffmpeg del sistema, se cae
+    a la mezcla plana anterior con volumen bajo.
+    """
     try:
         volume = os.environ.get("EDGETAPE_MUSIC_VOLUME", "0.22")
+        ducking = os.environ.get("EDGETAPE_MUSIC_DUCKING", "1") != "0"
         if voice:
             inputs = ["-i", voice, "-stream_loop", "-1", "-i", str(music)]
         else:
@@ -1626,19 +1990,31 @@ def _mix_music(voice: str | None, total: float, music: Path, out: Path) -> str |
                 "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
                 "-stream_loop", "-1", "-i", str(music),
             ]
-        graph = (
+        graphs = []
+        if voice and ducking:
+            graphs.append(
+                f"[1:a]volume=0.30[m];"
+                "[0:a]asplit=2[v][sc];"
+                "[m][sc]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=350[d];"
+                "[v][d]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[a]"
+            )
+        graphs.append(
             f"[1:a]volume={volume}[m];"
             "[0:a][m]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[a]"
         )
-        _run_ffmpeg(
-            [FFMPEG, "-y", "-hide_banner", "-loglevel", "error", *inputs,
-             "-filter_complex", graph, "-map", "[a]", "-t", f"{total:.3f}",
-             "-c:a", "aac", "-b:a", "128k", "-f", "mp4", str(out)],
-            timeout=300,
-        )
-        if out.exists() and out.stat().st_size > 0:
-            logger.info("música de fondo agregada: %s", music.name)
-            return str(out)
+        for graph in graphs:
+            try:
+                _run_ffmpeg(
+                    [FFMPEG, "-y", "-hide_banner", "-loglevel", "error", *inputs,
+                     "-filter_complex", graph, "-map", "[a]", "-t", f"{total:.3f}",
+                     "-c:a", "aac", "-b:a", "192k", "-f", "mp4", str(out)],
+                    timeout=300,
+                )
+                if out.exists() and out.stat().st_size > 0:
+                    logger.info("música de fondo agregada: %s", music.name)
+                    return str(out)
+            except Exception as exc:  # noqa: BLE001
+                logger.info("mezcla con ducking no disponible (%s); probando plana", exc)
     except Exception as exc:  # noqa: BLE001 — la música es opcional
         logger.warning("mezcla de música falló (%s); se deja solo la voz", exc)
     return None
@@ -1677,41 +2053,43 @@ def generate_ai_video(meta: dict, meta_path: Path | None, source: str | Path, tm
             f"el guion cubre {spoken:.0f}s de los {duration:.0f}s pedidos: "
             f"el final del video queda sin narración"
         )
-    audio = None
-    audio_path = tmp / "voice.mp3"
-    try:
-        audio = build_voiceover(script_text, voice, audio_path)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("TTS inesperado: %s", exc)
-        audio = None
-
-    # La duración pedida manda: si la locución se pasa, se acelera con atempo
-    # en vez de estirar el video (un corto de 15s salía de 18s).
-    total = duration
-    if audio:
-        fitted = _fit_audio(audio, total, tmp / "voice_fitted.m4a")
-        if fitted:
-            audio = fitted
-        else:
-            try:
-                over = probe_duration(audio) - total
-            except Exception:  # noqa: BLE001
-                over = 0.0
-            if over > 0.5:
-                warnings.append(
-                    f"la locución dura {over:.1f}s más de lo pedido y no se pudo ajustar"
-                )
-
     size = _size_for(platform)
     sentences = script_info["sentences"] or [script_text]
     n = len(sentences)
-    # La tarjeta de título y la end card son cortas y el resto del video es
-    # contenido: con 15s de duración no pueden quedarse con 7,5s cada una.
-    card = _card_seconds(total) if n >= 3 else 0.0
-    starts, ends = _sentence_timings(sentences, total, card, card)
+
+    # Narración por oración: duraciones reales, pausas medidas y sin atempo.
+    narration = build_narration(sentences, _resolve_voice(voice), tmp)
+    warnings.extend(narration.warnings)
+    audio = narration.audio
+    if audio and narration.total > 0.5:
+        total = narration.total
+        starts, ends = narration.starts, narration.ends
+        if abs(total - duration) > max(1.0, duration * 0.15):
+            warnings.append(
+                f"duración real {total:.1f}s vs {duration:.0f}s pedidos "
+                f"(la narración manda para no dejar aire muerto)"
+            )
+    else:
+        audio = None
+        total = duration
+        # La tarjeta de título y la end card son cortas y el resto del video es
+        # contenido: con 15s de duración no pueden quedarse con 7,5s cada una.
+        card = _card_seconds(total) if n >= 3 else 0.0
+        starts, ends = _sentence_timings(sentences, total, card, card)
+
+    if narration.provider:
+        script_info["tts_provider"] = narration.provider
+        script_info["voice_used"] = narration.voice
+    script_info["narration_seconds"] = round(total, 3)
 
     queries = script_info.get("queries") or []
-    assets = _fetch_scene_media(sentences, queries, size, tmp)
+    topic = script_info.get("visual_subject") or (
+        (script_info.get("entities") or [None])[0]
+    )
+    report: dict = {}
+    assets = _fetch_scene_media(
+        sentences, queries, size, tmp, topic=topic, report=report,
+    )
     video_count = sum(1 for _, is_v in assets if is_v)
     image_count = sum(1 for p, is_v in assets if p is not None and not is_v)
     stock_count = video_count + image_count
@@ -1753,11 +2131,7 @@ def generate_ai_video(meta: dict, meta_path: Path | None, source: str | Path, tm
             ))
             video_flags.append(False)
 
-    keywords = [
-        (_scene_query(sentences[i]) if (assets[i][0] is not None and not assets[i][1]) else "")
-        for i in range(n)
-    ]
-    cap_pngs = _render_captions(sentences, keywords, size, tmp)
+    cap_pngs = _render_captions(sentences, size, tmp)
     overlays: list[Path | None] = [
         None if (i == 0 or (i == n - 1 and n > 1)) else cap_pngs[i]
         for i in range(n)
@@ -1783,6 +2157,31 @@ def generate_ai_video(meta: dict, meta_path: Path | None, source: str | Path, tm
     script_info["stock_image_count"] = image_count
     script_info["gradient_count"] = n - stock_count
     script_info["warnings"] = warnings
+
+    # Reporte de procedencia: sin esto no se puede verificar de dónde salió cada
+    # escena ni si el sujeto del video apareció de verdad.
+    try:
+        scenes = list(report.get("scenes") or [])
+        report["requested_seconds"] = duration
+        report["narration_seconds"] = round(total, 3)
+        report["topic_coverage"] = script_info.get("topic_coverage")
+        report["entities"] = script_info.get("entities") or []
+        report["shots"] = script_info.get("shots") or []
+        report["scenes"] = [
+            {
+                **(scenes[i] if i < len(scenes) else {}),
+                "start": round(starts[i], 3),
+                "end": round(ends[i], 3),
+                "sentence": sentences[i],
+                "query": queries[i] if i < len(queries) else "",
+            }
+            for i in range(n)
+        ]
+        (tmp.parent / "visual_report.json").write_text(
+            json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("no se pudo escribir visual_report.json (%s)", exc)
 
     if meta_path is not None:
         try:

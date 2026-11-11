@@ -97,6 +97,8 @@ const STYLES: Record<string, string> = {
 const VOICES: Record<string, string> = {
   es_mx_female: "Mujer (es-MX)",
   es_mx_male: "Hombre (es-MX)",
+  es_ar_female: "Mujer (es-AR)",
+  es_ar_male: "Hombre (es-AR)",
   es_es_female: "Mujer (es-ES)",
   es_es_male: "Hombre (es-ES)",
 };
