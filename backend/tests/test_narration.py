@@ -69,3 +69,44 @@ def test_build_narration_provider_none_is_silent(
     assert n.audio is None
     assert n.provider == "none"
     assert any("desactivado" in w for w in n.warnings)
+
+
+def test_build_voiceover_retries_edge_before_gtts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app import ai_generate as aig
+
+    monkeypatch.setenv("EDGETAPE_TTS_PROVIDER", "edge")
+    monkeypatch.setattr(aig.time, "sleep", lambda *_: None)
+    attempts = {"n": 0}
+
+    async def _fake_edge(text, voice, out, rate=None):
+        attempts["n"] += 1
+        if attempts["n"] < 2:
+            raise RuntimeError("websocket transitorio")
+        out.write_bytes(b"id3" + b"x" * 128)
+
+    monkeypatch.setattr(aig, "_edge_tts_save", _fake_edge)
+    out = tmp_path / "voz.mp3"
+    assert aig.build_voiceover("Hola.", "es-AR-TomasNeural", out) == str(out)
+    assert attempts["n"] == 2
+    assert aig._LAST_TTS_PROVIDER == "edge"
+
+
+def test_build_narration_warns_when_gtts_used(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app import ai_generate as aig
+
+    monkeypatch.setenv("EDGETAPE_TTS_PROVIDER", "auto")
+    monkeypatch.setenv("EDGETAPE_TTS_PAUSE_MS", "0")
+
+    def _gtts_voice(text: str, voice: str | None, out: Path) -> str:
+        aig._LAST_TTS_PROVIDER = "gtts"
+        return _fake_voice(text, voice, out)
+
+    monkeypatch.setattr("app.ai_generate.build_voiceover", _gtts_voice)
+    n = narration.build_narration(["Hola mundo."], "es-AR-TomasNeural", tmp_path)
+    assert n.audio
+    assert n.provider == "gtts"
+    assert any("gTTS" in w for w in n.warnings)

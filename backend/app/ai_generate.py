@@ -106,11 +106,13 @@ _SCRIPT_SYSTEM = (
     "Divide el guion en oraciones separadas por punto; cada oración será una "
     "escena del video con UN SOLO b-roll, así que una idea por oración, frases "
     "breves, autónomas y fáciles de acompañar con una imagen. "
-    "Para cada oración produce además una 'query' visual en INGLÉS de 2 a 4 "
+    "Para cada oración produce además una 'query' visual en INGLÉS de 2 a 5 "
     "palabras (sustantivos concretos y filmables, sin texto) para buscar b-roll "
-    "de stock que ilustre esa escena. Puedes nombrar entidades reales del tema "
-    "(personas, clubes, lugares) cuando la escena trate de ellas; para búsquedas "
-    "genéricas usa sustantivos filmables en inglés. "
+    "que ilustre esa escena. ANCLA la query al tema: incluye el sujeto visual "
+    "del contexto (ej. 'boca juniors stadium', 'la bombonera crowd') o un "
+    "término específico del tema; evita queries genéricas como 'people', "
+    "'city' o 'success'. Puedes nombrar entidades reales (personas, clubes, "
+    "lugares). "
     "Respondes SOLO con JSON válido, sin texto adicional."
 )
 
@@ -345,16 +347,25 @@ def _topic_plan_fallback(prompt: str) -> dict:
     return {"entities": candidates[:8], "facts": [], "visual_subject": subject}
 
 
-def _verify_topic(prompt: str, script: str, entities: list[str]) -> dict:
+def _verify_topic(
+    prompt: str, script: str, entities: list[str], duration: float | None = None,
+) -> dict:
     """Puntúa cuánto cubre el guion el tema y qué falta. Nunca lanza."""
     if os.environ.get("EDGETAPE_TOPIC_QA", "1") == "0":
         return {"coverage": 1.0, "missing": [], "off_topic": []}
+    short = bool(duration and duration <= 60)
     try:
         raw = _complete(
             "Eres un editor exigente. Evalúas si un guion responde al tema.",
             (
                 f"Tema: {prompt}\n\nGuion:\n{script}\n\n"
-                "Devuelve SOLO JSON: "
+                + (
+                    "Este es un video CORTO (<=60s): no exijas cubrir todos los "
+                    "hechos históricos; basta con que sea sobre el tema y "
+                    "mencione al sujeto principal.\n\n"
+                    if short else ""
+                )
+                + "Devuelve SOLO JSON: "
                 '{"coverage": 0.0, "missing": ["..."], "off_topic": ["..."]}'
             ),
             timeout=45.0,
@@ -371,9 +382,15 @@ def _verify_topic(prompt: str, script: str, entities: list[str]) -> dict:
     except Exception:  # noqa: BLE001
         if not entities:
             return {"coverage": 1.0, "missing": [], "off_topic": []}
-        hits = sum(1 for e in entities if e.lower() in script.lower())
+        # En formatos cortos no se puede cubrir un fact sheet completo: basta
+        # con mencionar el sujeto y un par de entidades clave.
+        key = entities[:3] if short else entities
+        hits = sum(1 for e in key if e.lower() in script.lower())
+        coverage = hits / max(1, len(key))
+        if short and hits:
+            coverage = max(0.8, coverage)
         return {
-            "coverage": hits / max(1, len(entities)),
+            "coverage": coverage,
             "missing": [e for e in entities if e.lower() not in script.lower()][:6],
             "off_topic": [],
         }
@@ -397,8 +414,9 @@ _SCRIPT_PROMPT = (
     "fechas, resultados ni citas. Si no hay datos, narra el tema sin afirmar "
     "hechos dudosos.\n"
     "7. Devuelve 'queries': exactamente UNA keyword visual EN INGLÉS "
-    "(2-4 palabras, concreta y filmable) por oración, en el MISMO orden y con "
-    "la misma cantidad de elementos que oraciones.\n\n"
+    "(2-5 palabras) por oración, en el MISMO orden y con la misma cantidad de "
+    "elementos que oraciones. Ancla la query al sujeto visual del contexto "
+    "(ej. 'boca juniors stadium crowd'); no uses queries genéricas.\n\n"
     "Responde SOLO con JSON:\n"
     '{{"title": "<título efectivo y concreto>", "hook": "<gancho máx 60 caracteres>", '
     '"script": "<oración. Oración. Oración.>", "tags": ["tag1", "tag2"], '
@@ -423,9 +441,9 @@ _SCRIPT_BLOCK_PROMPT = (
     "2. No repitas ni reformules lo ya escrito ni lo de los bloques anteriores.\n"
     "3. La última escena del bloque debe dejar el hilo abierto para continuar.\n"
     "4. Sin emojis, sin rótulos. Usa las entidades y hechos del contexto.\n"
-    "5. 'queries': exactamente UNA keyword visual EN INGLÉS (2-4 palabras, "
-    "concreta y filmable) por oración, en el MISMO orden y con la misma cantidad "
-    "de elementos que oraciones.\n\n"
+    "5. 'queries': exactamente UNA keyword visual EN INGLÉS (2-5 palabras) por "
+    "oración, en el MISMO orden y con la misma cantidad de elementos que "
+    "oraciones. Ancla cada query al sujeto visual del contexto.\n\n"
     "Responde SOLO con JSON:\n"
     '{{"script": "<oración. Oración.>", "queries": ["city skyline", "..."]}}'
 )
@@ -800,7 +818,8 @@ def write_script(
         or str(topic.get("visual_subject") or "").strip()
         or (entities[0] if entities else "")
     )
-    check = _verify_topic(prompt, script, entities)
+    queries = _anchor_queries(queries, visual_subject)
+    check = _verify_topic(prompt, script, entities, duration)
     coverage = float(check.get("coverage", 1.0))
     if coverage < _topic_min_coverage():
         msg = (
@@ -905,32 +924,46 @@ async def _edge_tts_save(text: str, voice: str, out: Path, rate: str | None = No
     await communicate.save(str(out))
 
 
+_LAST_TTS_PROVIDER: str | None = None
+
+
 def build_voiceover(text: str, voice: str | None, out: Path) -> str | None:
     """Edge-TTS con respaldo gTTS; sin voz si ambos fallan o no están instalados.
 
     `EDGETAPE_TTS_PROVIDER=none` desactiva la síntesis (tests y renders sin voz).
     `EDGETAPE_TTS_RATE` ajusta la velocidad de edge-tts (ej. "+5%", "-5%").
     """
+    global _LAST_TTS_PROVIDER
+    _LAST_TTS_PROVIDER = None
     provider = os.environ.get("EDGETAPE_TTS_PROVIDER", "auto").strip().lower()
     if provider in {"none", "off", "0", "sin"}:
         return None
     target = _resolve_voice(voice)
     rate = os.environ.get("EDGETAPE_TTS_RATE") or None
     if provider not in {"gtts"}:
-        try:
-            asyncio.run(_edge_tts_save(text, target, out, rate=rate))
-            if out.exists() and out.stat().st_size > 0:
-                logger.info("voz edge-tts OK (%s)", target)
-                return str(out)
-            raise RuntimeError("edge-tts devolvió archivo vacío")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("edge-tts FAILED (%s); probando gTTS", exc)
+        edge_error: Exception | None = None
+        # edge-tts usa un WebSocket público: un fallo transitorio de red no
+        # debe degradar TODA la locución a gTTS (voz robótica).
+        for attempt in range(3):
+            try:
+                asyncio.run(_edge_tts_save(text, target, out, rate=rate))
+                if out.exists() and out.stat().st_size > 0:
+                    _LAST_TTS_PROVIDER = "edge"
+                    logger.info("voz edge-tts OK (%s)", target)
+                    return str(out)
+                raise RuntimeError("edge-tts devolvió archivo vacío")
+            except Exception as exc:  # noqa: BLE001
+                edge_error = exc
+                if attempt < 2:
+                    time.sleep(0.6 * (attempt + 1))
+        logger.warning("edge-tts FAILED tras 3 intentos (%s); probando gTTS", edge_error)
     try:
         from gtts import gTTS
 
         gTTS(text=text, lang="es", slow=False).save(str(out))
         if out.exists() and out.stat().st_size > 0:
-            logger.info("voz gTTS OK")
+            _LAST_TTS_PROVIDER = "gtts"
+            logger.info("voz gTTS OK (respaldo robótico)")
             return str(out)
     except Exception as exc:  # noqa: BLE001
         logger.warning("gTTS FAILED (%s); video sin voz", exc)
@@ -1179,6 +1212,35 @@ def _scene_query(text: str, limit: int = 3) -> str:
     return " ".join(w[:18] for w in words[:limit])
 
 
+def _anchor_queries(queries: list[str], subject: str) -> list[str]:
+    """Prefija el sujeto visual a las queries genéricas del LLM.
+
+    El LLM tiende a devolver "stadium crowd" o "young footballers" aunque el
+    tema sea Boca Juniors. Sin este ancla el stock devuelve fútbol genérico y
+    las escenas no se reconocen como del tema. Si la query ya nombra al sujeto
+    o una entidad, se deja intacta.
+    """
+    subject = (subject or "").strip()
+    if not subject:
+        return list(queries)
+    tokens = [
+        t for t in re.findall(r"[a-záéíóúñ0-9]{3,}", subject.lower())
+        if t not in {"del", "las", "los", "con", "por", "para"}
+    ] or [subject.lower()]
+    out: list[str] = []
+    for raw in queries:
+        q = (raw or "").strip()
+        if not q:
+            out.append(q)
+            continue
+        low = q.lower()
+        if subject.lower() in low or any(t in low for t in tokens):
+            out.append(q)
+        else:
+            out.append(f"{subject} {q}"[:90])
+    return out
+
+
 # Conectores y palabras que delatan una query en español: Pexels y Pixabay
 # buscan en inglés, así que "saber hacer especial" no devuelve nada y la escena
 # se queda con un gradiente de marca. Mejor un gradiente que un clip que no
@@ -1271,15 +1333,67 @@ def _pick_image_info(pages: dict, want_landscape: bool) -> str | None:
     return None
 
 
+def _wiki_json(client: httpx.Client, host: str, params: dict, retries: int = 3) -> dict:
+    """GET a la API de MediaWiki con reintentos.
+
+    Wikimedia devuelve 403/429 de forma intermitente (WAF/IP de datacenter);
+    un solo intento dejaba el video sin imágenes del sujeto y todo caía a stock
+    genérico. Se reintenta con backoff antes de darlo por perdido.
+    """
+    last: Exception | None = None
+    for attempt in range(max(1, retries)):
+        try:
+            resp = client.get(f"https://{host}/w/api.php", params=params)
+            if resp.status_code in {403, 429, 500, 502, 503}:
+                last = RuntimeError(f"{host} HTTP {resp.status_code}")
+            else:
+                resp.raise_for_status()
+                data = resp.json()
+                if isinstance(data, dict):
+                    return data
+                last = RuntimeError(f"{host} devolvió JSON inválido")
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+        if attempt + 1 < retries:
+            time.sleep(0.6 * (attempt + 1))
+    if last:
+        raise last
+    return {}
+
+
+def _candidate_images(pages: dict, want_landscape: bool) -> list[str]:
+    """URLs ordenadas por orientación y tamaño (acepta landscape y portrait).
+
+    Antes se descartaban las imágenes que no coincidían con el aspecto destino;
+    para un vertical eso eliminaba casi todo el material real del sujeto (las
+    fotos de clubes/estadios suelen ser horizontales). El renderer recorta.
+    """
+    scored: list[tuple[int, int, int, str]] = []
+    for page in (pages or {}).values():
+        ii = (page.get("imageinfo") or [None])[0]
+        if not ii or ii.get("mime") not in _IMAGE_MIMES:
+            continue
+        w, h = int(ii.get("width") or 0), int(ii.get("height") or 0)
+        if w < 640 or h < 640:
+            continue
+        url = ii.get("thumburl") or ii.get("url")
+        if not url:
+            continue
+        match = (w >= h) if want_landscape else (h >= w)
+        scored.append((0 if match else 1, -min(w, h), -(w * h), url))
+    scored.sort()
+    return [row[3] for row in scored]
+
+
 def _fetch_wikimedia_topic_images(
     topic: str, count: int, size: tuple[int, int], tmp: Path,
     client: httpx.Client | None = None, max_total: float = 45.0,
 ) -> list[Path]:
-    """Imágenes reales del SUJETO del video (Commons), no de la oración.
+    """Imágenes reales del SUJETO del video (Commons/Wikipedia), no de la oración.
 
-    Es la corrección al problema de fondo: para "Boca Juniors" el pipeline
-    buscaba "saber historia mirar" en stock y mostraba cualquier cosa. Aquí se
-    busca el nombre propio y se reparten sus imágenes entre las escenas.
+    Cascada: búsqueda en Commons → imagen principal de Wikipedia (es/en) →
+    categorías de Commons. Cualquier fallo de red/WAF se reintenta y, si no hay
+    material, el pipeline sigue con stock/IA (nunca rompe el job).
     """
     topic = (topic or "").strip()
     if not topic or count <= 0:
@@ -1290,55 +1404,143 @@ def _fetch_wikimedia_topic_images(
     own = client is None
     out: list[Path] = []
     seen: set[str] = set()
+    candidates: list[str] = []
+    deadline = time.monotonic() + max_total
+
+    def _add(urls) -> None:
+        for url in urls:
+            if url and url not in seen:
+                seen.add(url)
+                candidates.append(url)
+
     try:
-        c = client or httpx.Client(timeout=12.0, headers={"User-Agent": _UA})
+        c = client or httpx.Client(
+            timeout=12.0, headers={"User-Agent": _UA, "Accept": "application/json"},
+        )
         try:
-            params = {
-                "action": "query",
-                "generator": "search",
-                "gsrsearch": f"{topic} filetype:bitmap",
-                "gsrnamespace": "6",
-                "gsrlimit": "30",
-                "prop": "imageinfo",
-                "iiprop": "url|size|mime",
-                "iiurlwidth": "1600",
-                "format": "json",
-                "origin": "*",
-            }
-            resp = c.get(_WIKIMEDIA_API, params=params)
-            resp.raise_for_status()
-            pages = resp.json().get("query", {}).get("pages", {})
-            deadline = time.monotonic() + max_total
-            for page in pages.values():
+            # 1) Búsqueda directa en Commons (dos variantes de query).
+            for search in (f"{topic} filetype:bitmap", topic):
+                if len(candidates) >= count * 2 or time.monotonic() > deadline:
+                    break
+                try:
+                    data = _wiki_json(c, "commons.wikimedia.org", {
+                        "action": "query",
+                        "generator": "search",
+                        "gsrsearch": search,
+                        "gsrnamespace": "6",
+                        "gsrlimit": "40",
+                        "prop": "imageinfo",
+                        "iiprop": "url|size|mime",
+                        "iiurlwidth": "1600",
+                        "format": "json",
+                    })
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("buscando el sujeto '%s' (%s); otra vía", topic, exc)
+                    continue
+                _add(_candidate_images(
+                    (data.get("query") or {}).get("pages") or {}, want_landscape,
+                ))
+
+            # 2) Imagen principal de la página de Wikipedia (es primero).
+            for host in ("es.wikipedia.org", "en.wikipedia.org"):
+                if len(candidates) >= count or time.monotonic() > deadline:
+                    break
+                try:
+                    data = _wiki_json(c, host, {
+                        "action": "query",
+                        "titles": topic,
+                        "prop": "pageimages",
+                        "piprop": "thumbnail|original",
+                        "pithumbsize": "1600",
+                        "format": "json",
+                        "redirects": "1",
+                    })
+                except Exception:  # noqa: BLE001
+                    continue
+                for page in ((data.get("query") or {}).get("pages") or {}).values():
+                    thumb = (page.get("thumbnail") or {}).get("source")
+                    original = (page.get("original") or {}).get("source")
+                    _add([u for u in (thumb, original) if u])
+
+            # 3) Categorías de Commons: mucho más material del sujeto.
+            if len(candidates) < count and time.monotonic() <= deadline:
+                try:
+                    data = _wiki_json(c, "commons.wikimedia.org", {
+                        "action": "query",
+                        "list": "search",
+                        "srsearch": topic,
+                        "srnamespace": "14",
+                        "srlimit": "5",
+                        "format": "json",
+                    })
+                    cats = [
+                        x.get("title")
+                        for x in ((data.get("query") or {}).get("search") or [])
+                        if x.get("title")
+                    ]
+                    for cat in cats[:5]:
+                        if len(candidates) >= count or time.monotonic() > deadline:
+                            break
+                        try:
+                            members = _wiki_json(c, "commons.wikimedia.org", {
+                                "action": "query",
+                                "list": "categorymembers",
+                                "cmtitle": cat,
+                                "cmtype": "file",
+                                "cmlimit": "30",
+                                "format": "json",
+                            })
+                            titles = [
+                                x.get("title")
+                                for x in ((members.get("query") or {}).get("categorymembers") or [])
+                                if x.get("title")
+                            ]
+                            if not titles:
+                                continue
+                            info = _wiki_json(c, "commons.wikimedia.org", {
+                                "action": "query",
+                                "titles": "|".join(titles[:50]),
+                                "prop": "imageinfo",
+                                "iiprop": "url|size|mime",
+                                "iiurlwidth": "1600",
+                                "format": "json",
+                            })
+                            _add(_candidate_images(
+                                (info.get("query") or {}).get("pages") or {},
+                                want_landscape,
+                            ))
+                        except Exception:  # noqa: BLE001
+                            continue
+                except Exception as exc:  # noqa: BLE001
+                    logger.info("categorías de '%s' no disponibles (%s)", topic, exc)
+
+            # Descargar candidatos hasta completar `count`.
+            for url in candidates:
                 if len(out) >= count or time.monotonic() > deadline:
                     break
-                ii = (page.get("imageinfo") or [None])[0]
-                if not ii or ii.get("mime") not in _IMAGE_MIMES:
+                try:
+                    image = c.get(url, timeout=20.0)
+                except Exception:  # noqa: BLE001
                     continue
-                w, h = int(ii.get("width") or 0), int(ii.get("height") or 0)
-                if w < 640 or h < 640:
+                ctype = (image.headers.get("content-type") or "").lower()
+                if image.status_code != 200 or len(image.content) < 1024:
                     continue
-                if (want_landscape and h > w) or (not want_landscape and w > h):
-                    continue
-                url = ii.get("thumburl") or ii.get("url")
-                if not url or url in seen:
-                    continue
-                seen.add(url)
-                image = c.get(url)
-                if image.status_code != 200:
+                if "svg" in ctype or (ctype and not ctype.startswith("image/")):
                     continue
                 p = tmp / f"topic_{len(out)}.img"
                 p.write_bytes(image.content)
-                if p.stat().st_size < 1024:
-                    p.unlink(missing_ok=True)
-                    continue
                 out.append(p)
-                logger.info("sujeto '%s': imagen %d de Wikimedia Commons", topic, len(out))
+                logger.info(
+                    "sujeto '%s': imagen %d de Wikimedia (%s)",
+                    topic, len(out), url.rsplit("/", 1)[-1][:60],
+                )
         finally:
             if own:
                 c.close()
     except Exception as exc:  # noqa: BLE001
         logger.warning("imágenes del sujeto '%s' fuera de servicio (%s)", topic, exc)
+    if not out:
+        logger.warning("sin imágenes reales para '%s'; se usará stock genérico/IA", topic)
     return out
 
 
@@ -1378,18 +1580,20 @@ def _fetch_wikimedia_images(
                         "iiprop": "url|size|mime",
                         "iiurlwidth": "1600",
                         "format": "json",
-                        "origin": "*",
                     }
-                    resp = c.get(_WIKIMEDIA_API, params=params)
-                    resp.raise_for_status()
-                    pages = resp.json().get("query", {}).get("pages", {})
-                    url = _pick_image_info(pages, want_landscape)
+                    data = _wiki_json(c, "commons.wikimedia.org", params)
+                    pages = (data.get("query") or {}).get("pages") or {}
+                    found = _candidate_images(pages, want_landscape)
+                    url = found[0] if found else None
                     if url:
                         break
                 if not url:
                     continue
                 image = c.get(url)
-                if image.status_code != 200:
+                ctype = (image.headers.get("content-type") or "").lower()
+                if image.status_code != 200 or "svg" in ctype:
+                    continue
+                if ctype and not ctype.startswith("image/"):
                     continue
                 p = tmp / f"scene_{i}.img"
                 p.write_bytes(image.content)
@@ -2093,6 +2297,11 @@ def generate_ai_video(meta: dict, meta_path: Path | None, source: str | Path, tm
     video_count = sum(1 for _, is_v in assets if is_v)
     image_count = sum(1 for p, is_v in assets if p is not None and not is_v)
     stock_count = video_count + image_count
+    if topic and not (report.get("providers") or {}).get("wikimedia-topic"):
+        warnings.append(
+            f"no se encontraron imágenes reales de '{topic}': "
+            "el material puede verse genérico"
+        )
     if video_count or image_count:
         logger.info(
             "material por escena: %d b-roll, %d imágenes, %d fondos (%d escenas)",
