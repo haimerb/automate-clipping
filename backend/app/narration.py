@@ -182,7 +182,7 @@ def build_narration(
 
     # Import perezoso para que monkeypatches de tests sobre ai_generate.build_voiceover
     # sigan aplicando y para evitar un ciclo de imports al cargar el módulo.
-    from .ai_generate import build_voiceover
+    from . import ai_generate as _aig
 
     parts: list[Path] = []
     durations: list[float] = []
@@ -190,6 +190,7 @@ def build_narration(
     ends: list[float] = []
     total = 0.0
     warnings: list[str] = []
+    actual_providers: set[str] = set()
     failures = 0
     synth_ok = 0
 
@@ -200,7 +201,11 @@ def build_narration(
         if failures < _MAX_CONSECUTIVE_FAILURES:
             mp3 = tmp / f"tts_{i}.mp3"
             try:
-                produced = build_voiceover(sentence, voice, mp3)
+                _aig._LAST_TTS_PROVIDER = None
+                produced = _aig.build_voiceover(sentence, voice, mp3)
+                used = getattr(_aig, "_LAST_TTS_PROVIDER", None)
+                if used:
+                    actual_providers.add(used)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("TTS de la oración %d falló (%s)", i, exc)
                 produced = None
@@ -251,7 +256,20 @@ def build_narration(
     processed = _postprocess(raw, out)
     audio = str(processed or raw)
     used_provider = provider
-    if provider != "none" and not _edge_available():
+    if actual_providers:
+        used_provider = "edge" if actual_providers == {"edge"} else "gtts"
+    if "gtts" in actual_providers:
+        if provider == "gtts":
+            warnings.append(
+                "voz gTTS configurada (calidad robótica): usá edge-tts para "
+                "una voz neuronal"
+            )
+        else:
+            warnings.append(
+                "voz gTTS (robótica): edge-tts falló; instalá/revisá edge-tts "
+                "o configurá un TTS neuronal para mejorar la locución"
+            )
+    elif provider != "none" and not _edge_available():
         used_provider = "gtts"
         warnings.append(
             "voz gTTS (calidad inferior): instalá edge-tts o configurá un TTS "

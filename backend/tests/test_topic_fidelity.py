@@ -94,3 +94,88 @@ def test_write_script_warns_on_low_coverage(
 
     assert info["topic_coverage"] == 0.4
     assert any("cobertura del tema baja" in w for w in info["warnings"])
+
+
+def test_anchor_queries_prefixes_generic_queries() -> None:
+    anchored = aig._anchor_queries(
+        ["stadium crowd", "Boca Juniors fans", "", "trophy victory"],
+        "Boca Juniors",
+    )
+    assert anchored == [
+        "Boca Juniors stadium crowd",
+        "Boca Juniors fans",
+        "",
+        "Boca Juniors trophy victory",
+    ]
+
+
+def test_candidate_images_accepts_landscape_but_prefers_portrait() -> None:
+    pages = {
+        "1": {"imageinfo": [{
+            "mime": "image/jpeg", "width": 1600, "height": 900,
+            "thumburl": "https://x/landscape.jpg",
+        }]},
+        "2": {"imageinfo": [{
+            "mime": "image/jpeg", "width": 900, "height": 1600,
+            "thumburl": "https://x/portrait.jpg",
+        }]},
+    }
+    urls = aig._candidate_images(pages, want_landscape=False)
+    assert urls == ["https://x/portrait.jpg", "https://x/landscape.jpg"]
+
+
+def test_wiki_json_retries_transient_403(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(aig.time, "sleep", lambda *_: None)
+
+    class _Resp:
+        def __init__(self, status: int, data: dict) -> None:
+            self.status_code = status
+            self._data = data
+
+        def raise_for_status(self) -> None:
+            if self.status_code >= 400:
+                raise RuntimeError(f"HTTP {self.status_code}")
+
+        def json(self) -> dict:
+            return self._data
+
+    class _Client:
+        calls = 0
+
+        def get(self, url: str, params: dict):
+            self.calls += 1
+            if self.calls < 3:
+                return _Resp(403, {})
+            return _Resp(200, {"ok": 1})
+
+    client = _Client()
+    assert aig._wiki_json(client, "commons.wikimedia.org", {}) == {"ok": 1}
+    assert client.calls == 3
+
+
+def test_topic_images_use_landscape_when_vertical(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("EDGETAPE_TOPIC_IMAGES", "1")
+
+    def _fake_wiki(client, host, params, retries=3):
+        return {"query": {"pages": {"1": {"imageinfo": [{
+            "mime": "image/jpeg", "width": 1600, "height": 900,
+            "thumburl": "https://x/landscape.jpg",
+        }]}}}}
+
+    class _Resp:
+        status_code = 200
+        content = b"x" * 2048
+        headers = {"content-type": "image/jpeg"}
+
+    class _Client:
+        def get(self, url, timeout=None):
+            return _Resp()
+
+    monkeypatch.setattr(aig, "_wiki_json", _fake_wiki)
+    images = aig._fetch_wikimedia_topic_images(
+        "Boca Juniors", 1, (1080, 1920), tmp_path, client=_Client(),
+    )
+    assert len(images) == 1
+    assert images[0].read_bytes() == b"x" * 2048
